@@ -3,6 +3,7 @@ from components.sidebar import Sidebar
 from views.dashboard import DashboardView
 from views.cognitive import CognitiveView
 from views.creative import CreativeView
+from views.power_test import PowerTestView
 
 class App(ctk.CTk):
     def __init__(self):
@@ -28,7 +29,7 @@ class App(ctk.CTk):
 
         self.frames = {}
 
-        for View in (DashboardView, CognitiveView, CreativeView):
+        for View in (DashboardView, CognitiveView, CreativeView, PowerTestView):
             frame = View(self.container)
             self.frames[View.__name__] = frame
             frame.place(relx=0, rely=0, relwidth=1, relheight=1)

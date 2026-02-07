@@ -1,11 +1,5 @@
-import customtkinter as ctk
+from views.power_test import PowerTestView
 
-class CognitiveView(ctk.CTkFrame):
+class CognitiveView(PowerTestView):
     def __init__(self, parent):
-        super().__init__(parent, fg_color="transparent")
-
-        ctk.CTkLabel(
-            self,
-            text="Cognitive Detection",
-            font=("Segoe UI", 26, "bold")
-        ).pack(pady=60)
+        super().__init__(parent, title="COGNITIVE")

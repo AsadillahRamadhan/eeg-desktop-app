@@ -32,6 +32,7 @@ class Sidebar(ctk.CTkFrame):
 
         self.build()
         self.set_sidebar_enabled(False)
+        # self.set_sidebar_enabled(True)
 
     def load_icon(self, path):
         return ctk.CTkImage(

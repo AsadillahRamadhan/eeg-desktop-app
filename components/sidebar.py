@@ -21,6 +21,7 @@ class Sidebar(ctk.CTkFrame):
         self.navigate = navigate
         self.active_button = None
         self.all_buttons = []
+        self.is_connected = False
 
         self.icons = {
             "dashboard": self.load_icon("assets/icons/dashboard.png"),
@@ -30,6 +31,7 @@ class Sidebar(ctk.CTkFrame):
         }
 
         self.build()
+        self.set_sidebar_enabled(False)
 
     def load_icon(self, path):
         return ctk.CTkImage(
@@ -170,3 +172,23 @@ class Sidebar(ctk.CTkFrame):
         if parent:
             parent.configure(fg_color=ACTIVE_COLOR)
 
+
+    def set_sidebar_enabled(self, enabled: bool):
+        self.is_connected = enabled
+
+        for btn in self.all_buttons:
+            if enabled:
+                btn.configure(
+                    state="normal",
+                    fg_color=BTN_COLOR
+                )
+            else:
+                btn.configure(
+                    state="disabled",
+                    fg_color="#2A2A4A",   # warna disabled
+                    hover_color="#2A2A4A",
+                    text_color="#7A7A9A"
+                )
+
+    def on_connect_success(self):
+        self.set_sidebar_enabled(True)

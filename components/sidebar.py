@@ -31,8 +31,8 @@ class Sidebar(ctk.CTkFrame):
         }
 
         self.build()
-        self.set_sidebar_enabled(False)
-        # self.set_sidebar_enabled(True)
+        # self.set_sidebar_enabled(False)
+        self.set_sidebar_enabled(True)
 
     def load_icon(self, path):
         return ctk.CTkImage(
@@ -67,10 +67,11 @@ class Sidebar(ctk.CTkFrame):
             "Record",
             self.icons["record"],
             [
-                ("Cognitive", lambda: self.navigate("CognitiveView")),
-                ("Creative", lambda: self.navigate("CreativeView")),
+                ("Cognitive", lambda: self.navigate("RecordCognitiveView")),
+                ("Creative", lambda: self.navigate("RecordCreativeView")),
             ]
         )
+
 
     def menu_button(self, text, icon, command):
         btn = ctk.CTkButton(

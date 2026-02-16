@@ -4,6 +4,9 @@ from views.dashboard import DashboardView
 from views.cognitive import CognitiveView
 from views.creative import CreativeView
 from views.power_test import PowerTestView
+from views.record_cognitive import RecordCognitiveView
+from views.record_creative import RecordCreativeView
+
 
 class App(ctk.CTk):
     def __init__(self):
@@ -29,7 +32,7 @@ class App(ctk.CTk):
 
         self.frames = {}
 
-        for View in (DashboardView, CognitiveView, CreativeView, PowerTestView):
+        for View in (DashboardView, CognitiveView, CreativeView, PowerTestView, RecordCognitiveView, RecordCreativeView):
             frame = View(self.container)
             self.frames[View.__name__] = frame
             frame.place(relx=0, rely=0, relwidth=1, relheight=1)

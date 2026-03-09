@@ -11,7 +11,8 @@ from views.creative import CreativeView
 from views.power_test import PowerTestView
 from views.record_cognitive import RecordCognitiveView
 from views.record_creative import RecordCreativeView
-from services.eeg_inference import EEGClassifier, extract_psd_features, SAMPLING_RATE, WINDOW_SAMPLES, WINDOW_SECONDS
+from services.cognitive_pipeline import CognitiveClassifier, WINDOW_SAMPLES as COG_SAMPLES, WINDOW_SECONDS as COG_SECONDS
+from services.creative_pipeline import CreativeClassifier, WINDOW_SAMPLES as CRE_SAMPLES, WINDOW_SECONDS as CRE_SECONDS
 
 try:
     from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
@@ -54,15 +55,11 @@ class App(ctk.CTk):
             "creative": {"label": None, "score": None, "timestamp": None},
         }
 
-        # Load kedua model Random Forest (bisa diganti hot-reload saat runtime)
-        self.cognitive_classifier = EEGClassifier(
-            model_path=os.path.join("models", "cognitive_model.pkl"),
-            task="cognitive"
-        )
-        self.creative_classifier = EEGClassifier(
-            model_path=os.path.join("models", "creative_model.pkl"),
-            task="creative"
-        )
+        # Load cognitive pipeline (model + scaler + preprocessing sendiri)
+        self.cognitive_classifier = CognitiveClassifier()
+
+        # Load creative pipeline (model + scaler + preprocessing sendiri)
+        self.creative_classifier = CreativeClassifier()
 
         if BoardShim is not None:
             BoardShim.enable_dev_board_logger()
@@ -102,32 +99,31 @@ class App(ctk.CTk):
 
     def _inference_loop(self):
         """
-        Pipeline inferensi EEG (berjalan di background thread):
-          1. Ambil WINDOW_SAMPLES (625) titik data dari board
-          2. Preprocessing per channel: DC removal → notch → bandpass → scale [-1,1]
-          3. Ekstraksi fitur PSD (Welch) → absolute & relative bandpower 5 band
-          4. Prediksi label dengan model cognitive dan creative (Random Forest)
-          5. Simpan hasil; ulangi setiap WINDOW_SECONDS (5 detik)
+        Pipeline inferensi EEG (background thread).
+        Cognitive dan Creative masing-masing punya pipeline sendiri:
+          cognitive_pipeline.py : preprocess → extract_features → scale → predict
+          creative_pipeline.py  : preprocess → extract_features → scale → predict
         """
         eeg_channels = BoardShim.get_eeg_channels(BoardIds.CYTON_BOARD.value)
+        max_samples  = max(COG_SAMPLES, CRE_SAMPLES)
+        sleep_secs   = min(COG_SECONDS, CRE_SECONDS)
 
         while self.is_inference_running and self.is_eeg_connected and self.board_shim is not None:
             try:
-                # Ambil 625 sampel terbaru dari ring-buffer board
-                data = self.board_shim.get_current_board_data(WINDOW_SAMPLES)
-                if data is None or data.shape[1] < WINDOW_SAMPLES:
+                data = self.board_shim.get_current_board_data(max_samples)
+                if data is None or data.shape[1] < max_samples:
                     time.sleep(0.5)
                     continue
 
-                # [n_channels, WINDOW_SAMPLES]
-                eeg_window = data[eeg_channels, -WINDOW_SAMPLES:]
+                # Window terpisah sesuai konfigurasi masing-masing pipeline
+                cog_window = data[eeg_channels, -COG_SAMPLES:]
+                cre_window = data[eeg_channels, -CRE_SAMPLES:]
 
-                # Preprocessing + ekstraksi fitur PSD
-                features = extract_psd_features(eeg_window, fs=SAMPLING_RATE)
+                # ── Cognitive pipeline ────────────────────────────────────
+                cog = self.cognitive_classifier.predict(cog_window)
 
-                # Klasifikasi dengan 2 model
-                cog = self.cognitive_classifier.predict(features)
-                cre = self.creative_classifier.predict(features)
+                # ── Creative pipeline ─────────────────────────────────────
+                cre = self.creative_classifier.predict(cre_window)
 
                 now_ts = time.time()
                 if cog.label in (0, 1, 2):
@@ -148,8 +144,7 @@ class App(ctk.CTk):
             except Exception as e:
                 print(f"[inference_loop] error: {e}")
 
-            # Tunggu 1 window penuh (5 detik) sebelum window berikutnya
-            time.sleep(WINDOW_SECONDS)
+            time.sleep(sleep_secs)
 
     def connect_openbci(self):
         if self.is_eeg_connected:

@@ -17,6 +17,13 @@ import pickle
 from dataclasses import dataclass
 from typing import List, Optional
 
+# joblib lebih direkomendasikan untuk model sklearn (lebih cepat & stabil)
+try:
+    import joblib
+    JOBLIB_AVAIL = True
+except ImportError:
+    JOBLIB_AVAIL = False
+
 import numpy as np
 
 # ── BrainFlow filters (prioritas pertama) ──────────────────────────────────
@@ -175,8 +182,12 @@ def extract_psd_features(eeg_window: np.ndarray,
 
 class EEGClassifier:
     """
-    Load model scikit-learn (Random Forest) dari file pickle dan
-    jalankan inferensi pada feature vector PSD.
+    Load model scikit-learn (Random Forest) dari file .pkl atau .joblib
+    dan jalankan inferensi pada feature vector PSD.
+
+    Urutan load:
+      1. joblib.load()  — direkomendasikan untuk model sklearn
+      2. pickle.load()  — fallback jika joblib tidak tersedia
 
     File model bisa di-hot-reload saat runtime dengan .reload_model().
     """
@@ -188,35 +199,44 @@ class EEGClassifier:
 
     @staticmethod
     def _load_model(path: str):
+        """Load model dari file .pkl atau .joblib menggunakan joblib atau pickle."""
         if not os.path.exists(path):
-            print(f"[EEGClassifier] Model tidak ditemukan: {path}")
+            print(f"[EEGClassifier] ❌ File model tidak ditemukan: {path}")
             return None
+
+        # --- Coba joblib dulu (lebih aman untuk sklearn) ---
+        if JOBLIB_AVAIL:
+            try:
+                model = joblib.load(path)
+                model_type = type(model).__name__
+                print(f"[EEGClassifier] ✅ Model dimuat via joblib: {path} ({model_type})")
+                return model
+            except Exception as e:
+                print(f"[EEGClassifier] ⚠️  joblib gagal ({e}), mencoba pickle...")
+
+        # --- Fallback ke pickle ---
         try:
             with open(path, "rb") as f:
                 model = pickle.load(f)
-            print(f"[EEGClassifier] Model berhasil dimuat: {path}")
+            model_type = type(model).__name__
+            print(f"[EEGClassifier] ✅ Model dimuat via pickle: {path} ({model_type})")
             return model
         except Exception as e:
-            print(f"[EEGClassifier] Gagal load model {path}: {e}")
+            print(f"[EEGClassifier] ❌ Gagal load model {path}: {e}")
             return None
 
     def reload_model(self):
         """Hot-reload model dari disk tanpa restart aplikasi."""
+        print(f"[EEGClassifier:{self.task}] Reloading model dari {self.model_path}...")
         self.model = self._load_model(self.model_path)
 
     @property
     def is_loaded(self) -> bool:
         return self.model is not None
 
-    def _fallback_predict(self, x: np.ndarray) -> InferenceResult:
-        """Fallback heuristic saat model belum tersedia."""
-        rms = float(np.sqrt(np.mean(x ** 2) + 1e-12))
-        label = min(2, int(rms * 30))
-        return InferenceResult(label=label, score=None)
-
     def predict(self, features: np.ndarray) -> InferenceResult:
         """
-        Prediksi label dari feature vector.
+        Prediksi label dari feature vector menggunakan model yang sudah diload.
 
         Parameters
         ----------
@@ -225,18 +245,23 @@ class EEGClassifier:
         Returns
         -------
         InferenceResult  dengan .label (int) dan .score (float|None)
+
+        Raises
+        ------
+        RuntimeError  jika model belum diload (file tidak ditemukan)
         """
         if self.model is None:
-            return self._fallback_predict(features)
+            raise RuntimeError(
+                f"[EEGClassifier:{self.task}] Model belum diload. "
+                f"Letakkan file model di: {os.path.abspath(self.model_path)}"
+            )
 
         x2 = features.reshape(1, -1)
-        try:
-            label = int(self.model.predict(x2)[0])
-            score: Optional[float] = None
-            if hasattr(self.model, "predict_proba"):
-                proba = self.model.predict_proba(x2)[0]
-                score = float(np.max(proba))
-            return InferenceResult(label=label, score=score)
-        except Exception as e:
-            print(f"[EEGClassifier:{self.task}] predict error: {e}")
-            return self._fallback_predict(features)
+        label = int(self.model.predict(x2)[0])
+
+        score: Optional[float] = None
+        if hasattr(self.model, "predict_proba"):
+            proba = self.model.predict_proba(x2)[0]
+            score = float(np.max(proba))
+
+        return InferenceResult(label=label, score=score)

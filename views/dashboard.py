@@ -1,5 +1,6 @@
 import customtkinter as ctk
 
+
 class DashboardView(ctk.CTkFrame):
     def __init__(self, parent):
         super().__init__(parent, fg_color="transparent")
@@ -17,26 +18,24 @@ class DashboardView(ctk.CTkFrame):
 
         status.place(relx=0.9, rely=0.05, anchor="center")
 
-        device_status = "Connected" if False else "Not Connected"
-
-        box1 = ctk.CTkFrame(
+        self.box1 = ctk.CTkFrame(
             status,
             width=20,
             height=20,
             corner_radius=10,
-            fg_color="#36FF5B" if device_status == "Connected" else "#CA2222"
+            fg_color="#CA2222"
         )
 
-        box2 = ctk.CTkLabel(
+        self.box2 = ctk.CTkLabel(
             status,
-            text=f"{device_status}",
+            text="Not Connected",
             font=("Segoe UI", 12, "bold"),
             text_color="#1A1A40"
         )
 
-        box1.grid(row=0, column=0, padx=5, pady=10)
-        box1.grid_propagate(False)
-        box2.grid(row=0, column=1, padx=5, pady=10, sticky="nsew")
+        self.box1.grid(row=0, column=0, padx=5, pady=10)
+        self.box1.grid_propagate(False)
+        self.box2.grid(row=0, column=1, padx=5, pady=10, sticky="nsew")
 
         card = ctk.CTkFrame(
             self,
@@ -65,14 +64,16 @@ class DashboardView(ctk.CTkFrame):
         btn_frame = ctk.CTkFrame(card, fg_color="transparent")
         btn_frame.pack(pady=30)
 
-        ctk.CTkButton(
+        self.connect_button = ctk.CTkButton(
             btn_frame,
             text="Connect",
             width=140,
             corner_radius=16,
             fg_color="#C7FFB5",
-            text_color="#1F7A1F"
-        ).pack(side="left", padx=15)
+            text_color="#1F7A1F",
+            command=self.on_connect_clicked
+        )
+        self.connect_button.pack(side="left", padx=15)
 
         ctk.CTkButton(
             btn_frame,
@@ -83,3 +84,21 @@ class DashboardView(ctk.CTkFrame):
             text_color="#B30000",
             command=self.quit
         ).pack(side="left", padx=15)
+
+        self.refresh_status_indicator()
+
+    def refresh_status_indicator(self):
+        app = self.winfo_toplevel()
+        is_connected = getattr(app, "is_eeg_connected", False)
+        self.box1.configure(fg_color="#36FF5B" if is_connected else "#CA2222")
+        self.box2.configure(text="Connected" if is_connected else "Not Connected")
+        self.connect_button.configure(
+            text="Connected" if is_connected else "Connect",
+            state="disabled" if is_connected else "normal"
+        )
+
+    def on_connect_clicked(self):
+        app = self.winfo_toplevel()
+        if hasattr(app, "connect_openbci"):
+            app.connect_openbci()
+        self.refresh_status_indicator()

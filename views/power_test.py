@@ -2,6 +2,7 @@ import customtkinter as ctk
 import tkinter as tk
 from tkinter import Canvas
 from PIL import Image, ImageTk
+import time
 
 
 class PowerTestView(ctk.CTkFrame):
@@ -11,6 +12,8 @@ class PowerTestView(ctk.CTkFrame):
         self.current_value = 0
         self.is_testing = False
         self.test_timer = None
+        self.last_seen_timestamp = None
+        self.latest_label_value = None
         
         self.plant_images = self.load_plant_images()
         
@@ -18,6 +21,9 @@ class PowerTestView(ctk.CTkFrame):
         self.grid_rowconfigure(0, weight=1)
         
         self.build_ui()
+
+    def on_show(self):
+        self.refresh_prediction_status()
     
     def load_plant_images(self):
         """Load semua gambar tanaman"""
@@ -122,6 +128,14 @@ class PowerTestView(ctk.CTkFrame):
             command=self.toggle_test
         )
         self.start_button.grid(row=1, column=0)
+
+        self.result_label = ctk.CTkLabel(
+            left_frame,
+            text="Waiting prediction...",
+            font=("Segoe UI", 13, "bold"),
+            text_color="#1A1A40"
+        )
+        self.result_label.grid(row=2, column=0, pady=(10, 0))
         
         right_frame = ctk.CTkFrame(
             main_frame,
@@ -254,16 +268,23 @@ class PowerTestView(ctk.CTkFrame):
             self.stop_test()
     
     def start_test(self):
-        """Mulai test - increment nilai secara bertahap"""
+        """Mulai membaca hasil klasifikasi EEG"""
+        app = self.winfo_toplevel()
+        if not getattr(app, "is_eeg_connected", False):
+            self.result_label.configure(text="EEG belum connect")
+            return
+
         self.is_testing = True
         self.current_value = 0
+        self.latest_label_value = None
         self.start_button.configure(
             text="Stop Test",
             fg_color="#FF6B6B",
             border_color="#CC0000",
             hover_color="#FF5252"
         )
-        self.increment_value()
+        self.result_label.configure(text="Monitoring label per 10 detik...")
+        self.poll_prediction()
     
     def stop_test(self):
         """Stop test"""
@@ -278,24 +299,52 @@ class PowerTestView(ctk.CTkFrame):
             hover_color="#E8E8E8"
         )
     
-    def increment_value(self):
-        """Increment nilai secara bertahap dengan animasi"""
+    def _task_key(self):
+        return "creative" if "CREATIVE" in self.title_text else "cognitive"
+
+    def refresh_prediction_status(self):
+        app = self.winfo_toplevel()
+        task = self._task_key()
+        payload = app.get_latest_prediction(task) if hasattr(app, "get_latest_prediction") else {}
+        label = payload.get("label")
+        ts = payload.get("timestamp")
+
+        if label in (0, 1, 2):
+            if ts is not None:
+                ts_text = time.strftime("%H:%M:%S", time.localtime(ts))
+                self.result_label.configure(text=f"Latest {task} label: {label} ({ts_text})")
+            else:
+                self.result_label.configure(text=f"Latest {task} label: {label}")
+
+    def poll_prediction(self):
+        """Polling hasil klasifikasi setiap 500 ms"""
         if not self.is_testing:
             return
-        
-        if self.current_value < 10:
-            self.current_value += 1
-            self.update_display(self.current_value)
-            self.test_timer = self.after(500, self.increment_value)
-        else:
-            self.show_completion_message()
+
+        app = self.winfo_toplevel()
+        task = self._task_key()
+        payload = app.get_latest_prediction(task) if hasattr(app, "get_latest_prediction") else {}
+        label = payload.get("label")
+        ts = payload.get("timestamp")
+
+        if label in (0, 1, 2):
+            if self.last_seen_timestamp != ts:
+                self.last_seen_timestamp = ts
+                self.latest_label_value = label
+
+                mapped_value = {0: 3, 1: 6, 2: 10}.get(label, 0)
+                self.update_display(mapped_value)
+                self.refresh_prediction_status()
+                self.show_completion_message(label)
+
+        self.test_timer = self.after(500, self.poll_prediction)
     
     def update_display(self, value):
         """Update tampilan gambar dan chart"""
         self.draw_plant(value)
         self.draw_chart(value)
     
-    def show_completion_message(self):
+    def show_completion_message(self, label):
         """Tampilkan pesan selesai"""
         self.stop_test()
         
@@ -325,5 +374,13 @@ class PowerTestView(ctk.CTkFrame):
             wraplength=300,
             justify="center"
         ).pack(pady=(0, 30), padx=30)
+
+        ctk.CTkLabel(
+            overlay,
+            text=f"Label hasil klasifikasi: {label}",
+            font=("Segoe UI", 12, "bold"),
+            text_color="#1A1A40",
+            justify="center"
+        ).pack(pady=(0, 20), padx=30)
         
         self.after(3000, overlay.destroy)

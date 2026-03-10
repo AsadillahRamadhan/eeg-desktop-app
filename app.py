@@ -11,15 +11,9 @@ from views.creative import CreativeView
 from views.power_test import PowerTestView
 from views.record_cognitive import RecordCognitiveView
 from views.record_creative import RecordCreativeView
-from services.cognitive_pipeline import CognitiveClassifier, WINDOW_SAMPLES as COG_SAMPLES, WINDOW_SECONDS as COG_SECONDS
-from services.creative_pipeline import CreativeClassifier, WINDOW_SAMPLES as CRE_SAMPLES, WINDOW_SECONDS as CRE_SECONDS
-
-try:
-    from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
-except ImportError:
-    BoardShim = None
-    BrainFlowInputParams = None
-    BoardIds = None
+from services.cognitive_pipeline import CognitiveClassifier, WINDOW_SECONDS as COG_SECONDS, FS_ORIGINAL as COG_FS
+from services.creative_pipeline import CreativeClassifier, WINDOW_SECONDS as CRE_SECONDS
+from services.board_reader import BoardReader, BRAINFLOW_OK
 
 
 class App(ctk.CTk):
@@ -44,7 +38,7 @@ class App(ctk.CTk):
         )
         self.status.pack(anchor="ne", padx=20, pady=10)
 
-        self.board_shim = None
+        self.board_reader: BoardReader | None = None
         self.is_eeg_connected = False
         self.is_inference_running = False
         self.inference_thread = None
@@ -60,9 +54,6 @@ class App(ctk.CTk):
 
         # Load creative pipeline (model + scaler + preprocessing sendiri)
         self.creative_classifier = CreativeClassifier()
-
-        if BoardShim is not None:
-            BoardShim.enable_dev_board_logger()
 
         self.frames = {}
 
@@ -87,7 +78,7 @@ class App(ctk.CTk):
         if self.is_inference_running:
             return
 
-        if self.board_shim is None:
+        if self.board_reader is None or not self.board_reader.connected:
             return
 
         self.is_inference_running = True
@@ -100,24 +91,26 @@ class App(ctk.CTk):
     def _inference_loop(self):
         """
         Pipeline inferensi EEG (background thread).
-        Cognitive dan Creative masing-masing punya pipeline sendiri:
-          cognitive_pipeline.py : preprocess → extract_features → scale → predict
-          creative_pipeline.py  : preprocess → extract_features → scale → predict
+        BoardReader.get_latest() → [n_channels, n_samples] µV @ 125 Hz
+          cognitive_pipeline : upsample → notch → bandpass → window → PSD → predict
+          creative_pipeline  : notch → bandpass → extract → predict
         """
-        eeg_channels = BoardShim.get_eeg_channels(BoardIds.CYTON_BOARD.value)
-        max_samples  = max(COG_SAMPLES, CRE_SAMPLES)
-        sleep_secs   = min(COG_SECONDS, CRE_SECONDS)
+        fs = self.board_reader.sampling_rate          # 125 Hz (Cyton+Daisy)
+        n_cog = COG_SECONDS * fs                      # sampel raw untuk cognitive
+        n_cre = CRE_SECONDS * fs                      # sampel raw untuk creative
+        max_raw = max(n_cog, n_cre)
+        sleep_secs = min(COG_SECONDS, CRE_SECONDS)
 
-        while self.is_inference_running and self.is_eeg_connected and self.board_shim is not None:
+        while self.is_inference_running and self.board_reader is not None and self.board_reader.connected:
             try:
-                data = self.board_shim.get_current_board_data(max_samples)
-                if data is None or data.shape[1] < max_samples:
+                eeg = self.board_reader.get_latest(max_raw)  # [n_ch, max_raw] µV
+
+                if eeg.shape[1] < max_raw:
                     time.sleep(0.5)
                     continue
 
-                # Window terpisah sesuai konfigurasi masing-masing pipeline
-                cog_window = data[eeg_channels, -COG_SAMPLES:]
-                cre_window = data[eeg_channels, -CRE_SAMPLES:]
+                cog_window = eeg[:, -n_cog:]   # [n_ch, n_cog] → cognitive pipeline
+                cre_window = eeg[:, -n_cre:]   # [n_ch, n_cre] → creative pipeline
 
                 # ── Cognitive pipeline ────────────────────────────────────
                 cog = self.cognitive_classifier.predict(cog_window)
@@ -128,19 +121,20 @@ class App(ctk.CTk):
                 now_ts = time.time()
                 if cog.label in (0, 1, 2):
                     self.predictions["cognitive"] = {
-                        "label": cog.label,
-                        "score": cog.score,
+                        "label":     cog.label,
+                        "score":     cog.score,
                         "timestamp": now_ts,
                     }
 
                 if cre.label in (0, 1, 2):
                     self.predictions["creative"] = {
-                        "label": cre.label,
-                        "score": cre.score,
+                        "label":     cre.label,
+                        "score":     cre.score,
                         "timestamp": now_ts,
                     }
 
                 self.last_window_ts = now_ts
+
             except Exception as e:
                 print(f"[inference_loop] error: {e}")
 
@@ -151,7 +145,7 @@ class App(ctk.CTk):
             messagebox.showinfo("EEG", "Device sudah terkoneksi.")
             return True
 
-        if BoardShim is None:
+        if not BRAINFLOW_OK:
             messagebox.showerror(
                 "BrainFlow tidak ditemukan",
                 "Package brainflow belum terpasang. Install dulu dengan `pip install brainflow`."
@@ -167,14 +161,10 @@ class App(ctk.CTk):
             messagebox.showwarning("Port diperlukan", "Koneksi dibatalkan karena serial port kosong.")
             return False
 
-        params = BrainFlowInputParams()
-        params.serial_port = serial_port
-
         try:
-            board_id = BoardIds.CYTON_BOARD.value
-            self.board_shim = BoardShim(board_id, params)
-            self.board_shim.prepare_session()
-            self.board_shim.start_stream()
+            # daisy=True → Cyton+Daisy 16 channel @ 125 Hz
+            self.board_reader = BoardReader(serial_port=serial_port, daisy=True, log=False)
+            self.board_reader.connect()
 
             self.is_eeg_connected = True
             self.status.configure(text="● Connected", text_color="#1f7a1f")
@@ -183,34 +173,29 @@ class App(ctk.CTk):
             return True
         except Exception as e:
             self._stop_inference()
-            if self.board_shim is not None:
+            if self.board_reader is not None:
                 try:
-                    self.board_shim.release_session()
+                    self.board_reader.disconnect()
                 except Exception:
                     pass
-            self.board_shim = None
+            self.board_reader = None
             self.is_eeg_connected = False
             self.status.configure(text="● Not Connected", text_color="red")
             messagebox.showerror("Koneksi gagal", f"Gagal connect ke OpenBCI: {e}")
             return False
 
     def disconnect_openbci(self):
-        if not self.is_eeg_connected or self.board_shim is None:
+        if not self.is_eeg_connected or self.board_reader is None:
             return
 
         self._stop_inference()
 
         try:
-            self.board_shim.stop_stream()
+            self.board_reader.disconnect()
         except Exception:
             pass
 
-        try:
-            self.board_shim.release_session()
-        except Exception:
-            pass
-
-        self.board_shim = None
+        self.board_reader = None
         self.is_eeg_connected = False
         self.status.configure(text="● Not Connected", text_color="red")
 

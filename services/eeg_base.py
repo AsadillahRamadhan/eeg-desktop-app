@@ -46,6 +46,9 @@ def load_artifact(path: str, name: str = "Artifact"):
     
     try:
         obj = joblib.load(path)
+        # Jika artifact disimpan sebagai dict {"model": ..., ...}, ambil key "model"
+        if isinstance(obj, dict) and "model" in obj:
+            obj = obj["model"]
         print(f"[OK] {name} loaded from {path}")
         return obj
     except Exception as e:

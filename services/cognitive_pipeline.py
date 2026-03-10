@@ -5,43 +5,41 @@ Pipeline EEG khusus task COGNITIVE.
 
 Alur:
   eeg_window [n_ch, n_samples]
-    → preprocess()    : DC removal → notch 50 Hz → bandpass 0.5–49.5 Hz
-    → extract_features(): Welch PSD → mean(PSD) per channel → 1 nilai/channel
+    → preprocess()    : upsample 125→512 → DC removal → notch 50 Hz → bandpass 1–40 Hz
+    → extract_features(): Welch PSD (freq ≤ 40 Hz) → flatten all freq bins × channels
     → scale()         : MinMaxScaler.transform()
-    → predict()       : RandomForestClassifier.predict()
-
-Konfigurasi:
-  Sesuaikan konstanta di blok CONFIG di bawah agar cocok dengan
-  pipeline yang digunakan saat training model cognitive.
+    → predict()       : model.predict()
 """
 
 import os
 import numpy as np
 from typing import Optional
+from scipy.signal import resample_poly, iirnotch, butter, filtfilt, welch
 
-from services.eeg_base import (
-    InferenceResult,
-    load_artifact,
-    apply_notch,
-    apply_bandpass,
-    compute_welch,
-)
+from services.eeg_base import InferenceResult, load_artifact
+
 
 # ═══════════════════════════════════════════════════════════════════════════
-# CONFIG — sesuaikan dengan pipeline training model cognitive
+# CONFIG
 # ═══════════════════════════════════════════════════════════════════════════
 
-SAMPLING_RATE:   int   = 250     # Hz
-WINDOW_SECONDS:  int   = 5       # detik
-WINDOW_SAMPLES:  int   = SAMPLING_RATE * WINDOW_SECONDS   # 1250 sampel
-N_CHANNELS:      int   = 16      # jumlah channel EEG saat training
+FS_ORIGINAL:     int   = 125
+FS_TARGET:       int   = 512
+UPSAMPLE_UP:     int   = 512
+UPSAMPLE_DOWN:   int   = 125
 
-NOTCH_FREQ:      float = 50.0    # Hz
-NOTCH_QUALITY:   float = 30.0    # Q factor
+WINDOW_SECONDS:  int   = 2
+WINDOW_SAMPLES:  int   = FS_TARGET * WINDOW_SECONDS  # 1024
+N_CHANNELS:      int   = 16
 
-BANDPASS_LOW:    float = 0.5     # Hz
-BANDPASS_HIGH:   float = 49.5    # Hz
-BANDPASS_ORDER:  int   = 5
+NOTCH_FREQ:      float = 50.0
+NOTCH_QUALITY:   float = 30.0
+
+BANDPASS_LOW:    float = 1.0
+BANDPASS_HIGH:   float = 40.0
+BANDPASS_ORDER:  int   = 4
+
+PSD_MAX_FREQ:    float = 40.0
 
 MODEL_PATH:  str = os.path.join("models", "cognitive_model.pkl")
 SCALER_PATH: str = os.path.join("models", "cognitive_scaler.pkl")
@@ -53,29 +51,42 @@ SCALER_PATH: str = os.path.join("models", "cognitive_scaler.pkl")
 
 def preprocess(eeg_window: np.ndarray) -> np.ndarray:
     """
-    Preprocessing sinyal EEG mentah untuk task cognitive.
+    Pipeline: upsample 125→512 → DC removal → notch 50 Hz → bandpass 1–40 Hz
+    
+    SAMA PERSIS dengan kode training: format [n_samples, n_channels], axis=0
 
     Parameters
     ----------
-    eeg_window : np.ndarray  shape [n_channels, n_samples]
+    eeg_window : np.ndarray  shape [n_channels, n_samples] (fs=125)
 
     Returns
     -------
-    filtered : np.ndarray  shape [N_CHANNELS, n_samples]  (float64)
+    filtered : np.ndarray  shape [n_samples_upsampled, n_channels] (fs=512)
     """
     use_ch = min(N_CHANNELS, eeg_window.shape[0])
-    out = np.empty((use_ch, eeg_window.shape[1]), dtype=np.float64)
+    data = eeg_window[:use_ch].astype(np.float64)
 
-    for ch in range(use_ch):
-        x = np.ascontiguousarray(eeg_window[ch]).astype(np.float64).copy()
-        x -= x.mean()                                              # DC removal
-        x = apply_notch(x, SAMPLING_RATE, NOTCH_FREQ, NOTCH_QUALITY)  # notch 50 Hz
-        x = apply_bandpass(x, SAMPLING_RATE,
-                           BANDPASS_LOW, BANDPASS_HIGH,
-                           BANDPASS_ORDER)                         # bandpass
-        out[ch] = x
+    # Transpose ke format training: [n_samples, n_channels] 
+    data = data.T  # [n_channels, n_samples] → [n_samples, n_channels]
 
-    return out
+    # Upsample 125 → 512 Hz (axis=0 sama seperti kode training)
+    data = resample_poly(data, UPSAMPLE_UP, UPSAMPLE_DOWN, axis=0)
+
+    # DC removal per channel
+    data -= data.mean(axis=0, keepdims=True)
+
+    # Notch filter 50 Hz (axis=0 sama seperti kode training)
+    b_notch, a_notch = iirnotch(NOTCH_FREQ, NOTCH_QUALITY, FS_TARGET)
+    data = filtfilt(b_notch, a_notch, data, axis=0)
+
+    # Bandpass 1–40 Hz, order 4 (axis=0 sama seperti kode training)
+    nyq = 0.5 * FS_TARGET
+    low = BANDPASS_LOW / nyq
+    high = BANDPASS_HIGH / nyq
+    b_bp, a_bp = butter(BANDPASS_ORDER, [low, high], btype='band', output='ba')  # type: ignore[misc]
+    data = filtfilt(b_bp, a_bp, data, axis=0)
+
+    return data
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -84,27 +95,28 @@ def preprocess(eeg_window: np.ndarray) -> np.ndarray:
 
 def extract_features(preprocessed: np.ndarray) -> np.ndarray:
     """
-    Ekstraksi fitur dari window yang sudah dipreprocess (cognitive).
-
-    Fitur: mean(PSD Welch) per channel → 1 nilai/channel
-    Panjang output: N_CHANNELS fitur
+    Welch PSD (nperseg=fs*2), freq ≤ 40 Hz, flatten → 1-D vector.
+    
+    SAMA PERSIS dengan kode training: extract_psd(window, fs)
 
     Parameters
     ----------
-    preprocessed : np.ndarray  shape [N_CHANNELS, n_samples]
+    preprocessed : np.ndarray  shape [n_samples, n_channels] (hasil dari preprocess)
 
     Returns
     -------
-    features : np.ndarray  1-D, panjang = N_CHANNELS
+    features : np.ndarray  1-D
     """
-    features = []
-    nperseg  = min(preprocessed.shape[1], WINDOW_SAMPLES)
+    # Input sudah format [n_samples, n_channels], tidak perlu transpose
+    nperseg = FS_TARGET * 2
+    freqs, psd = welch(preprocessed, fs=FS_TARGET, nperseg=nperseg, axis=0)
 
-    for ch in range(preprocessed.shape[0]):
-        _, psd = compute_welch(preprocessed[ch], SAMPLING_RATE, nperseg)
-        features.append(float(np.mean(psd)))   # mean PSD — sama seperti notebook
+    # Ambil freq ≤ 40 Hz
+    mask = freqs <= PSD_MAX_FREQ
+    psd = psd[mask]
 
-    return np.asarray(features, dtype=np.float64)
+    # Flatten channel (sama seperti kode training)
+    return psd.flatten().astype(np.float64)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -112,10 +124,6 @@ def extract_features(preprocessed: np.ndarray) -> np.ndarray:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class CognitiveClassifier:
-    """
-    Classifier EEG untuk task COGNITIVE.
-    Load model + scaler dari file, jalankan full pipeline sendiri.
-    """
 
     def __init__(self,
                  model_path: str = MODEL_PATH,
@@ -126,7 +134,6 @@ class CognitiveClassifier:
         self.scaler = load_artifact(scaler_path, "Cognitive Scaler")
 
     def reload(self):
-        """Hot-reload model dan scaler dari disk tanpa restart aplikasi."""
         self.model  = load_artifact(self.model_path,  "Cognitive Model")
         self.scaler = load_artifact(self.scaler_path, "Cognitive Scaler")
 
@@ -135,7 +142,6 @@ class CognitiveClassifier:
         return self.model is not None
 
     def scale(self, features: np.ndarray) -> np.ndarray:
-        """Scale fitur dengan scaler training. Kembalikan apa adanya jika tidak ada scaler."""
         if self.scaler is None:
             return features
         try:
@@ -146,15 +152,11 @@ class CognitiveClassifier:
 
     def predict(self, eeg_window: np.ndarray) -> InferenceResult:
         """
-        Full pipeline cognitive: preprocess → extract → scale → predict.
+        Full pipeline: preprocess → extract → scale → predict.
 
         Parameters
         ----------
-        eeg_window : np.ndarray  shape [n_channels, n_samples]  (raw EEG dari board)
-
-        Returns
-        -------
-        InferenceResult  dengan .label (int) dan .score (float | None)
+        eeg_window : np.ndarray  shape [n_channels, n_samples] (raw, fs=125)
         """
         if self.model is None:
             raise RuntimeError(
@@ -162,9 +164,9 @@ class CognitiveClassifier:
                 f"  Letakkan file di: {os.path.abspath(self.model_path)}"
             )
 
-        filtered  = preprocess(eeg_window)
-        features  = extract_features(filtered)
-        scaled    = self.scale(features)
+        filtered = preprocess(eeg_window)
+        features = extract_features(filtered)
+        scaled   = self.scale(features)
 
         x2    = scaled.reshape(1, -1)
         label = int(self.model.predict(x2)[0])

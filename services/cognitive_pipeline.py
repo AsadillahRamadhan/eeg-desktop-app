@@ -4,11 +4,23 @@ services/cognitive_pipeline.py
 Pipeline EEG khusus task COGNITIVE.
 
 Alur:
-  eeg_window [n_ch, n_samples]
-    → preprocess()    : upsample 125→512 → DC removal → notch 50 Hz → bandpass 1–40 Hz
-    → extract_features(): Welch PSD (freq ≤ 40 Hz) → flatten all freq bins × channels
-    → scale()         : MinMaxScaler.transform()
-    → predict()       : model.predict()
+  Raw EEG [n_ch, n_samples]
+    ↓ preprocess()
+        upsample 125→512
+        DC removal
+        Notch filter  50 Hz  (iirnotch, Q=30)
+        Notch filter 100 Hz  (harmonik PLI)
+        Bandpass     1–40 Hz (Butterworth order 4)
+    ↓ extract_features()
+        Welch PSD (nperseg=fs*2, axis=channel)
+        Band mask 1–40 Hz
+        Mean band power per channel  → [16]
+    ↓ scale()
+        MinMax normalization
+    ↓ predict()
+        model.predict()
+
+  Output fitur: 16 nilai (1 per channel)
 """
 
 import os
@@ -33,6 +45,7 @@ WINDOW_SAMPLES:  int   = FS_TARGET * WINDOW_SECONDS  # 1024
 N_CHANNELS:      int   = 16
 
 NOTCH_FREQ:      float = 50.0
+NOTCH_FREQ2:     float = 100.0   # harmonik 2×50 Hz
 NOTCH_QUALITY:   float = 30.0
 
 BANDPASS_LOW:    float = 1.0
@@ -41,7 +54,7 @@ BANDPASS_ORDER:  int   = 4
 
 PSD_MAX_FREQ:    float = 40.0
 
-MODEL_PATH:  str = os.path.join("models", "cognitive_model.pkl")
+MODEL_PATH:  str = os.path.join("models", "cognitive_random_forest_model.pkl")
 SCALER_PATH: str = os.path.join("models", "cognitive_scaler.pkl")
 
 
@@ -51,9 +64,12 @@ SCALER_PATH: str = os.path.join("models", "cognitive_scaler.pkl")
 
 def preprocess(eeg_window: np.ndarray) -> np.ndarray:
     """
-    Pipeline: upsample 125→512 → DC removal → notch 50 Hz → bandpass 1–40 Hz
-    
-    SAMA PERSIS dengan kode training: format [n_samples, n_channels], axis=0
+    Pipeline:
+      upsample 125→512
+      → DC removal
+      → Notch 50 Hz   (PLI fundamental)
+      → Notch 100 Hz  (PLI harmonik)
+      → Bandpass 1–40 Hz
 
     Parameters
     ----------
@@ -75,11 +91,16 @@ def preprocess(eeg_window: np.ndarray) -> np.ndarray:
     # DC removal per channel
     data -= data.mean(axis=0, keepdims=True)
 
-    # Notch filter 50 Hz (axis=0 sama seperti kode training)
+    # Notch filter 50 Hz — PLI fundamental
     b_notch, a_notch = iirnotch(NOTCH_FREQ, NOTCH_QUALITY, FS_TARGET)
     data = filtfilt(b_notch, a_notch, data, axis=0)
 
-    # Bandpass 1–40 Hz, order 4 (axis=0 sama seperti kode training)
+    # Notch filter 100 Hz — PLI harmonik (hanya berlaku jika fs > 200 Hz)
+    if NOTCH_FREQ2 < FS_TARGET / 2:
+        b_notch2, a_notch2 = iirnotch(NOTCH_FREQ2, NOTCH_QUALITY, FS_TARGET)
+        data = filtfilt(b_notch2, a_notch2, data, axis=0)
+
+    # Bandpass 1–40 Hz, order 4
     nyq = 0.5 * FS_TARGET
     low = BANDPASS_LOW / nyq
     high = BANDPASS_HIGH / nyq
@@ -95,28 +116,33 @@ def preprocess(eeg_window: np.ndarray) -> np.ndarray:
 
 def extract_features(preprocessed: np.ndarray) -> np.ndarray:
     """
-    Welch PSD (nperseg=fs*2), freq ≤ 40 Hz, flatten → 1-D vector.
-    
-    SAMA PERSIS dengan kode training: extract_psd(window, fs)
+    Welch PSD (1–40 Hz) → mean band power per channel → shape [n_channels].
+
+    Pipeline:
+      1. Welch PSD  : nperseg = FS_TARGET * 2, axis=0  → freqs, psd [n_freq, n_channels]
+      2. Band mask  : hanya frekuensi 1–40 Hz
+      3. Mean power : rata-rata PSD per channel          → [n_channels]  (16 nilai)
 
     Parameters
     ----------
-    preprocessed : np.ndarray  shape [n_samples, n_channels] (hasil dari preprocess)
+    preprocessed : np.ndarray  shape [n_samples, n_channels]
 
     Returns
     -------
-    features : np.ndarray  1-D
+    features : np.ndarray  shape [n_channels]  → 16 input features
     """
-    # Input sudah format [n_samples, n_channels], tidak perlu transpose
     nperseg = FS_TARGET * 2
     freqs, psd = welch(preprocessed, fs=FS_TARGET, nperseg=nperseg, axis=0)
+    # psd shape: [n_freq, n_channels]
 
-    # Ambil freq ≤ 40 Hz
-    mask = freqs <= PSD_MAX_FREQ
-    psd = psd[mask]
+    # Ambil bin frekuensi dalam band 1–40 Hz
+    mask = (freqs >= BANDPASS_LOW) & (freqs <= PSD_MAX_FREQ)
+    psd_band = psd[mask]  # [n_freq_band, n_channels]
 
-    # Flatten channel (sama seperti kode training)
-    return psd.flatten().astype(np.float64)
+    # Mean power per channel → 1 nilai per channel
+    mean_power = psd_band.mean(axis=0)  # [n_channels]
+
+    return mean_power.astype(np.float64)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

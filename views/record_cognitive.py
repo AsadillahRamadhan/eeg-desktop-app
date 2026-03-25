@@ -1,21 +1,19 @@
 import customtkinter as ctk
-import random
 import time
 from tkinter import Canvas
+from typing import Any
 
 
 class RecordCognitiveView(ctk.CTkFrame):
     """
-    Record Cognitive (Window 60 detik)
-    - Chart menampilkan jumlah label dalam 60 detik terakhir (sliding window)
+    Record Cognitive (Cumulative Counter)
+    - Chart menampilkan jumlah label kumulatif selama sesi berjalan
     - Start/Stop + Reset
-    - Update acak + animasi smooth
+    - Update dari prediksi realtime + animasi smooth
     - Saat pertama kali dibuka, chart langsung tampil ukuran besar
     - Timestamp di atas chart
     - Sumbu Y kiri tanpa angka (kosong)
     """
-
-    WINDOW_SECONDS = 60
 
     DEFAULT_CANVAS_W = 900
     DEFAULT_CANVAS_H = 520
@@ -26,12 +24,12 @@ class RecordCognitiveView(ctk.CTkFrame):
         self.navigate = navigate
         self.title_text = title
 
-        self.labels = ["Cog A", "Cog B", "Cog C", "Others"]
+        self.labels = ["Memory Recall", "Arithmetic Calculation", "Visual Pattern", "Others"]
 
         self.counts = {k: 0 for k in self.labels}
         self.display_counts = {k: 0.0 for k in self.labels}
 
-        # list of (timestamp, label)
+        # list of (timestamp, label_name)
         self.events = []
 
         self.is_running = False
@@ -43,6 +41,7 @@ class RecordCognitiveView(ctk.CTkFrame):
 
         self._redraw_job = None
         self._last_update_ts = None  # untuk timestamp di atas chart
+        self._last_seen_pred_ts = None
 
         self.build_ui()
         self.after(50, self.draw_chart)
@@ -158,12 +157,24 @@ class RecordCognitiveView(ctk.CTkFrame):
             self.stop_counter()
 
     def start_counter(self):
+        app: Any = self.winfo_toplevel()
+        if not getattr(app, "is_eeg_connected", False):
+            return
+
+        if hasattr(app, "start_task_inference"):
+            app.start_task_inference("cognitive")
+
         self.is_running = True
+        self._last_seen_pred_ts = None
         self.toggle_btn.configure(text="Stop", fg_color="#FF4C4C", hover_color="#E63E3E")
         self.schedule_tick()
 
     def stop_counter(self):
         self.is_running = False
+        app: Any = self.winfo_toplevel()
+        if hasattr(app, "stop_task_inference"):
+            app.stop_task_inference("cognitive")
+
         self.toggle_btn.configure(text="Start", fg_color="#28C76F", hover_color="#22B463")
 
         if self.timer:
@@ -176,6 +187,7 @@ class RecordCognitiveView(ctk.CTkFrame):
     def reset_counter(self):
         self.stop_counter()
         self.events.clear()
+        self._last_seen_pred_ts = None
         for k in self.counts:
             self.counts[k] = 0
             self.display_counts[k] = 0.0
@@ -186,20 +198,30 @@ class RecordCognitiveView(ctk.CTkFrame):
     def schedule_tick(self):
         if not self.is_running:
             return
-        self.timer = self.after(random.randint(350, 900), self.tick)
+        self.timer = self.after(500, self.tick)
 
     def tick(self):
         if not self.is_running:
             return
 
-        now = time.time()
-        self._last_update_ts = now
+        app: Any = self.winfo_toplevel()
+        payload = app.get_latest_prediction("cognitive") if hasattr(app, "get_latest_prediction") else {}
+        label = payload.get("label")
+        pred_ts = payload.get("timestamp")
 
-        key = random.choice(self.labels)
-        self.events.append((now, key))
+        # Hitung hanya prediksi baru (timestamp berubah)
+        if label in (0, 1, 2, 3) and pred_ts is not None and pred_ts != self._last_seen_pred_ts:
+            self._last_seen_pred_ts = pred_ts
+            self._last_update_ts = pred_ts
 
-        cutoff = now - self.WINDOW_SECONDS
-        self.events = [(t, k) for (t, k) in self.events if t >= cutoff]
+            label_map = {
+                0: "Memory Recall",
+                1: "Arithmetic Calculation",
+                2: "Visual Pattern",
+                3: "Others",
+            }
+            key = label_map.get(label, "Others")
+            self.events.append((pred_ts, key))
 
         new_counts = {k: 0 for k in self.labels}
         for _, k in self.events:

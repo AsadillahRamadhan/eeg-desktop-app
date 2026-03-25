@@ -7,26 +7,22 @@ Alur:
   Raw EEG [n_ch, n_samples]
     ↓ preprocess()
         upsample 125→512
-        DC removal
-        Notch filter  50 Hz  (iirnotch, Q=30)
-        Notch filter 100 Hz  (harmonik PLI)
-        Bandpass     1–40 Hz (Butterworth order 4)
     ↓ extract_features()
-        Welch PSD (nperseg=fs*2, axis=channel)
-        Band mask 1–40 Hz
-        Mean band power per channel  → [16]
+                Welch PSD (nperseg=min(512, n_samples), axis=channel)
+                Mean PSD per channel  → [16]
     ↓ scale()
-        MinMax normalization
+        StandardScaler (dari model_package)
     ↓ predict()
         model.predict()
 
-  Output fitur: 16 nilai (1 per channel)
+    Output fitur: 16 nilai (1 per channel)
 """
 
 import os
 import numpy as np
-from typing import Optional
-from scipy.signal import resample_poly, iirnotch, butter, filtfilt, welch
+import warnings
+from typing import Any, Optional
+from scipy.signal import resample, welch
 
 from services.eeg_base import InferenceResult, load_artifact
 
@@ -37,25 +33,12 @@ from services.eeg_base import InferenceResult, load_artifact
 
 FS_ORIGINAL:     int   = 125
 FS_TARGET:       int   = 512
-UPSAMPLE_UP:     int   = 512
-UPSAMPLE_DOWN:   int   = 125
 
-WINDOW_SECONDS:  int   = 2
-WINDOW_SAMPLES:  int   = FS_TARGET * WINDOW_SECONDS  # 1024
+WINDOW_SECONDS:  int   = 5
+WINDOW_SAMPLES:  int   = FS_TARGET * WINDOW_SECONDS  # 2560
 N_CHANNELS:      int   = 16
 
-NOTCH_FREQ:      float = 50.0
-NOTCH_FREQ2:     float = 100.0   # harmonik 2×50 Hz
-NOTCH_QUALITY:   float = 30.0
-
-BANDPASS_LOW:    float = 1.0
-BANDPASS_HIGH:   float = 40.0
-BANDPASS_ORDER:  int   = 4
-
-PSD_MAX_FREQ:    float = 40.0
-
-MODEL_PATH:  str = os.path.join("models", "cognitive_random_forest_model.pkl")
-SCALER_PATH: str = os.path.join("models", "cognitive_scaler.pkl")
+MODEL_PATH:  str = os.path.join("models", "model_fix.pkl")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -66,10 +49,6 @@ def preprocess(eeg_window: np.ndarray) -> np.ndarray:
     """
     Pipeline:
       upsample 125→512
-      → DC removal
-      → Notch 50 Hz   (PLI fundamental)
-      → Notch 100 Hz  (PLI harmonik)
-      → Bandpass 1–40 Hz
 
     Parameters
     ----------
@@ -82,30 +61,12 @@ def preprocess(eeg_window: np.ndarray) -> np.ndarray:
     use_ch = min(N_CHANNELS, eeg_window.shape[0])
     data = eeg_window[:use_ch].astype(np.float64)
 
-    # Transpose ke format training: [n_samples, n_channels] 
+    # Format mengikuti training: [n_samples, n_channels]
     data = data.T  # [n_channels, n_samples] → [n_samples, n_channels]
 
-    # Upsample 125 → 512 Hz (axis=0 sama seperti kode training)
-    data = resample_poly(data, UPSAMPLE_UP, UPSAMPLE_DOWN, axis=0)
-
-    # DC removal per channel
-    data -= data.mean(axis=0, keepdims=True)
-
-    # Notch filter 50 Hz — PLI fundamental
-    b_notch, a_notch = iirnotch(NOTCH_FREQ, NOTCH_QUALITY, FS_TARGET)
-    data = filtfilt(b_notch, a_notch, data, axis=0)
-
-    # Notch filter 100 Hz — PLI harmonik (hanya berlaku jika fs > 200 Hz)
-    if NOTCH_FREQ2 < FS_TARGET / 2:
-        b_notch2, a_notch2 = iirnotch(NOTCH_FREQ2, NOTCH_QUALITY, FS_TARGET)
-        data = filtfilt(b_notch2, a_notch2, data, axis=0)
-
-    # Bandpass 1–40 Hz, order 4
-    nyq = 0.5 * FS_TARGET
-    low = BANDPASS_LOW / nyq
-    high = BANDPASS_HIGH / nyq
-    b_bp, a_bp = butter(BANDPASS_ORDER, [low, high], btype='band', output='ba')  # type: ignore[misc]
-    data = filtfilt(b_bp, a_bp, data, axis=0)
+    # Upsample persis seperti training.py
+    n_target = int(data.shape[0] * FS_TARGET / FS_ORIGINAL)
+    data = np.asarray(resample(data, n_target, axis=0), dtype=np.float64)
 
     return data
 
@@ -116,12 +77,11 @@ def preprocess(eeg_window: np.ndarray) -> np.ndarray:
 
 def extract_features(preprocessed: np.ndarray) -> np.ndarray:
     """
-    Welch PSD (1–40 Hz) → mean band power per channel → shape [n_channels].
+        Welch PSD → mean PSD per channel → shape [n_channels].
 
     Pipeline:
-      1. Welch PSD  : nperseg = FS_TARGET * 2, axis=0  → freqs, psd [n_freq, n_channels]
-      2. Band mask  : hanya frekuensi 1–40 Hz
-      3. Mean power : rata-rata PSD per channel          → [n_channels]  (16 nilai)
+            1. Welch PSD  : nperseg = min(512, n_samples), axis=0
+            2. Mean power : rata-rata PSD per channel → [n_channels] (16 nilai)
 
     Parameters
     ----------
@@ -131,16 +91,9 @@ def extract_features(preprocessed: np.ndarray) -> np.ndarray:
     -------
     features : np.ndarray  shape [n_channels]  → 16 input features
     """
-    nperseg = FS_TARGET * 2
-    freqs, psd = welch(preprocessed, fs=FS_TARGET, nperseg=nperseg, axis=0)
-    # psd shape: [n_freq, n_channels]
-
-    # Ambil bin frekuensi dalam band 1–40 Hz
-    mask = (freqs >= BANDPASS_LOW) & (freqs <= PSD_MAX_FREQ)
-    psd_band = psd[mask]  # [n_freq_band, n_channels]
-
-    # Mean power per channel → 1 nilai per channel
-    mean_power = psd_band.mean(axis=0)  # [n_channels]
+    nperseg = min(512, preprocessed.shape[0])
+    _, psd = welch(preprocessed, fs=FS_TARGET, nperseg=nperseg, axis=0)
+    mean_power = psd.mean(axis=0)
 
     return mean_power.astype(np.float64)
 
@@ -152,16 +105,32 @@ def extract_features(preprocessed: np.ndarray) -> np.ndarray:
 class CognitiveClassifier:
 
     def __init__(self,
-                 model_path: str = MODEL_PATH,
-                 scaler_path: str = SCALER_PATH):
+                 model_path: str = MODEL_PATH):
         self.model_path  = model_path
-        self.scaler_path = scaler_path
-        self.model  = load_artifact(model_path,  "Cognitive Model")
-        self.scaler = load_artifact(scaler_path, "Cognitive Scaler")
+        self.model: Any = None
+        self.scaler: Any = None
+        self.feature_cols: Optional[list[str]] = None
+        self.label_names: Optional[list[str]] = None
+        self.selected_channels: Optional[list[int]] = None
+        self.reload()
 
     def reload(self):
-        self.model  = load_artifact(self.model_path,  "Cognitive Model")
-        self.scaler = load_artifact(self.scaler_path, "Cognitive Scaler")
+        loaded = load_artifact(self.model_path, "Cognitive Model")
+        print("Loaded model package:", loaded)
+
+        # Format utama: satu file berisi model_package.
+        if isinstance(loaded, dict) and "model" in loaded:
+            self.model = loaded.get("model")
+            self.scaler = loaded.get("scaler")
+            self.feature_cols = loaded.get("feature_cols")
+            self.label_names = loaded.get("label_names")
+            self.selected_channels = loaded.get("selected_channels")
+            return
+
+        raise RuntimeError(
+            "[Cognitive] Format model tidak sesuai. "
+            "Gunakan file joblib berisi model_package dengan key 'model' dan 'scaler'."
+        )
 
     @property
     def is_loaded(self) -> bool:
@@ -171,7 +140,15 @@ class CognitiveClassifier:
         if self.scaler is None:
             return features
         try:
-            return self.scaler.transform(features.reshape(1, -1)).flatten().astype(np.float64)
+            x2 = features.reshape(1, -1)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="X does not have valid feature names.*",
+                    category=UserWarning,
+                )
+                scaled = self.scaler.transform(x2)
+            return np.asarray(scaled, dtype=np.float64).flatten()
         except Exception as e:
             print(f"[Cognitive] scaling error: {e}")
             return features
@@ -189,6 +166,8 @@ class CognitiveClassifier:
                 f"[Cognitive] Model belum diload.\n"
                 f"  Letakkan file di: {os.path.abspath(self.model_path)}"
             )
+        if not hasattr(self.model, "predict"):
+            raise RuntimeError("[Cognitive] Artifact model tidak punya method predict().")
 
         filtered = preprocess(eeg_window)
         features = extract_features(filtered)

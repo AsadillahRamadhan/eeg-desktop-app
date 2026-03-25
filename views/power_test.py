@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import Canvas
 from PIL import Image, ImageTk
 import time
+from typing import Any
 
 
 class PowerTestView(ctk.CTkFrame):
@@ -269,13 +270,18 @@ class PowerTestView(ctk.CTkFrame):
     
     def start_test(self):
         """Mulai membaca hasil klasifikasi EEG"""
-        app = self.winfo_toplevel()
+        app: Any = self.winfo_toplevel()
+        task = self._task_key()
         if not getattr(app, "is_eeg_connected", False):
             self.result_label.configure(text="EEG belum connect")
             return
 
+        if hasattr(app, "start_task_inference"):
+            app.start_task_inference(task)
+
         self.is_testing = True
         self.current_value = 0
+        self.last_seen_timestamp = None
         self.latest_label_value = None
         self.start_button.configure(
             text="Stop Test",
@@ -289,6 +295,10 @@ class PowerTestView(ctk.CTkFrame):
     def stop_test(self):
         """Stop test"""
         self.is_testing = False
+        app: Any = self.winfo_toplevel()
+        if hasattr(app, "stop_task_inference"):
+            app.stop_task_inference(self._task_key())
+
         if self.test_timer:
             self.after_cancel(self.test_timer)
             self.test_timer = None
@@ -303,7 +313,7 @@ class PowerTestView(ctk.CTkFrame):
         return "creative" if "CREATIVE" in self.title_text else "cognitive"
 
     def refresh_prediction_status(self):
-        app = self.winfo_toplevel()
+        app: Any = self.winfo_toplevel()
         task = self._task_key()
         payload = app.get_latest_prediction(task) if hasattr(app, "get_latest_prediction") else {}
         label = payload.get("label")
@@ -321,7 +331,7 @@ class PowerTestView(ctk.CTkFrame):
         if not self.is_testing:
             return
 
-        app = self.winfo_toplevel()
+        app: Any = self.winfo_toplevel()
         task = self._task_key()
         payload = app.get_latest_prediction(task) if hasattr(app, "get_latest_prediction") else {}
         label = payload.get("label")

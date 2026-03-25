@@ -3,6 +3,7 @@ from tkinter import messagebox
 import os
 import threading
 import time
+from typing import Any
 
 from components.sidebar import Sidebar
 from views.dashboard import DashboardView
@@ -42,9 +43,11 @@ class App(ctk.CTk):
         self.is_eeg_connected = False
         self.is_inference_running = False
         self.inference_thread = None
+        self.active_task: str | None = None
+        self.current_view_name: str | None = None
 
         self.last_window_ts = None
-        self.predictions = {
+        self.predictions: dict[str, dict[str, Any]] = {
             "cognitive": {"label": None, "score": None, "timestamp": None},
             "creative": {"label": None, "score": None, "timestamp": None},
         }
@@ -66,10 +69,23 @@ class App(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def show_frame(self, name):
+        prev_name = self.current_view_name
+
+        # Auto-stop test saat user keluar dari halaman test sebelumnya.
+        if prev_name in ("CognitiveView", "CreativeView") and prev_name != name:
+            prev_frame = self.frames.get(prev_name)
+            if prev_frame is not None and hasattr(prev_frame, "stop_test"):
+                try:
+                    prev_frame.stop_test()
+                except Exception as e:
+                    print(f"[show_frame] auto-stop warning: {e}")
+
         frame = self.frames[name]
         frame.tkraise()
         if hasattr(frame, "on_show"):
             frame.on_show()
+
+        self.current_view_name = name
 
     def get_latest_prediction(self, task: str):
         return self.predictions.get(task, {"label": None, "score": None, "timestamp": None})
@@ -88,6 +104,23 @@ class App(ctk.CTk):
     def _stop_inference(self):
         self.is_inference_running = False
 
+    def start_task_inference(self, task: str):
+        if task not in ("cognitive", "creative"):
+            return
+        self.active_task = task
+        self._start_inference()
+
+    def stop_task_inference(self, task: str | None = None):
+        if task is not None and task != self.active_task:
+            return
+        self.active_task = None
+        self._stop_inference()
+
+    def _log_prediction(self, task: str, label: int, score: float | None, ts: float):
+        ts_text = time.strftime("%H:%M:%S", time.localtime(ts))
+        score_text = f"{score:.4f}" if score is not None else "n/a"
+        print(f"[{ts_text}] [{task}] label={label}, score={score_text}")
+
     def _inference_loop(self):
         """
         Pipeline inferensi EEG (background thread).
@@ -95,6 +128,9 @@ class App(ctk.CTk):
           cognitive_pipeline : upsample → notch → bandpass → window → PSD → predict
           creative_pipeline  : notch → bandpass → extract → predict
         """
+        if self.board_reader is None:
+            return
+
         fs = self.board_reader.sampling_rate          # 125 Hz (Cyton+Daisy)
         n_cog = COG_SECONDS * fs                      # sampel raw untuk cognitive
         n_cre = CRE_SECONDS * fs                      # sampel raw untuk creative
@@ -112,21 +148,20 @@ class App(ctk.CTk):
                 cog_window = eeg[:, -n_cog:]   # [n_ch, n_cog] → cognitive pipeline
                 cre_window = eeg[:, -n_cre:]   # [n_ch, n_cre] → creative pipeline
 
-                # ── Cognitive pipeline ────────────────────────────────────
-                cog = self.cognitive_classifier.predict(cog_window)
-
-                # ── Creative pipeline ─────────────────────────────────────
-                cre = self.creative_classifier.predict(cre_window)
-
                 now_ts = time.time()
-                if cog.label in (0, 1, 2):
+
+                # Jalankan inferensi hanya untuk menu aktif.
+                if self.active_task == "cognitive":
+                    cog = self.cognitive_classifier.predict(cog_window)
+                    self._log_prediction("cognitive", cog.label, cog.score, now_ts)
                     self.predictions["cognitive"] = {
                         "label":     cog.label,
                         "score":     cog.score,
                         "timestamp": now_ts,
                     }
-
-                if cre.label in (0, 1, 2):
+                elif self.active_task == "creative":
+                    cre = self.creative_classifier.predict(cre_window)
+                    self._log_prediction("creative", cre.label, cre.score, now_ts)
                     self.predictions["creative"] = {
                         "label":     cre.label,
                         "score":     cre.score,
@@ -168,7 +203,6 @@ class App(ctk.CTk):
 
             self.is_eeg_connected = True
             self.status.configure(text="● Connected", text_color="#1f7a1f")
-            self._start_inference()
             messagebox.showinfo("EEG", f"Berhasil connect ke OpenBCI di {serial_port}.")
             return True
         except Exception as e:

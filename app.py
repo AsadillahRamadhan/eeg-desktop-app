@@ -10,7 +10,7 @@ from views.dashboard import DashboardView
 from views.cognitive import CognitiveView
 from views.creative import CreativeView
 from views.power_test import PowerTestView
-from views.record_cognitive import RecordCognitiveView
+from views.cog10 import RecordCognitiveView
 from views.record_creative import RecordCreativeView
 from services.cognitive_pipeline import CognitiveClassifier, WINDOW_SECONDS as COG_SECONDS, FS_ORIGINAL as COG_FS
 from services.creative_pipeline import CreativeClassifier, WINDOW_SECONDS as CRE_SECONDS

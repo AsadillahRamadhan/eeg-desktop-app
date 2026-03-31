@@ -283,13 +283,14 @@ class PowerTestView(ctk.CTkFrame):
         self.current_value = 0
         self.last_seen_timestamp = None
         self.latest_label_value = None
+        self.update_display(0)
         self.start_button.configure(
             text="Stop Test",
             fg_color="#FF6B6B",
             border_color="#CC0000",
             hover_color="#FF5252"
         )
-        self.result_label.configure(text="Monitoring label per 10 detik...")
+        self.result_label.configure(text="Monitoring label per 5 detik...")
         self.poll_prediction()
     
     def stop_test(self):
@@ -342,10 +343,15 @@ class PowerTestView(ctk.CTkFrame):
                 self.last_seen_timestamp = ts
                 self.latest_label_value = label
 
-                mapped_value = {0: 3, 1: 6, 2: 10}.get(label, 0)
-                self.update_display(mapped_value)
+                # Tiap prediksi valid menambah progress 1 langkah (maksimal 10)
+                self.current_value = min(10, self.current_value + 1)
+                self.update_display(self.current_value)
                 self.refresh_prediction_status()
-                self.show_completion_message(label)
+
+                # Selesai saat progress sudah penuh
+                if self.current_value >= 10:
+                    self.show_completion_message(label)
+                    return
 
         self.test_timer = self.after(500, self.poll_prediction)
     

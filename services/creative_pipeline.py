@@ -1,173 +1,227 @@
 """
 services/creative_pipeline.py
--------------------------------
-Pipeline EEG khusus task CREATIVE.
+--------------------------------
+Pipeline EEG khusus task CREATIVE (OpenBCI-style preprocessing).
 
 Alur:
-  eeg_window [n_ch, n_samples]
-    → preprocess()    : DC removal → notch 50 Hz → bandpass 0.5–49.5 Hz
-    → extract_features(): Welch PSD → mean(PSD) per channel → 1 nilai/channel
-    → scale()         : MinMaxScaler.transform()
-    → predict()       : RandomForestClassifier.predict()
-
-Konfigurasi:
-  Sesuaikan konstanta di blok CONFIG di bawah agar cocok dengan
-  pipeline yang digunakan saat training model creative.
+  Raw EEG [n_ch, n_samples] @ 125 Hz
+    -> preprocess()
+      notch 50 Hz -> bandpass 1-45 Hz -> StandardScaler per window
+    -> extract_features()
+      mean per channel -> 16 fitur
+    -> scale()
+      scaler dari model package (rf_eeg_model['scaler'])
+    -> predict()
+      model.predict() dari model package (rf_eeg_model['model'])
 """
 
 import os
+import warnings
+from typing import Any, Optional, cast
+
 import numpy as np
-from typing import Optional
+from scipy.signal import butter, filtfilt, iirnotch
 
-from services.eeg_base import (
-    InferenceResult,
-    load_artifact,
-    apply_notch,
-    apply_bandpass,
-    compute_welch,
-)
-
-# ═══════════════════════════════════════════════════════════════════════════
-# CONFIG — sesuaikan dengan pipeline training model creative
-# ═══════════════════════════════════════════════════════════════════════════
-
-SAMPLING_RATE:   int   = 250     # Hz
-WINDOW_SECONDS:  int   = 5       # detik
-WINDOW_SAMPLES:  int   = SAMPLING_RATE * WINDOW_SECONDS   # 1250 sampel
-N_CHANNELS:      int   = 16      # jumlah channel EEG saat training
-
-NOTCH_FREQ:      float = 50.0    # Hz
-NOTCH_QUALITY:   float = 30.0    # Q factor
-
-BANDPASS_LOW:    float = 0.5     # Hz
-BANDPASS_HIGH:   float = 49.5    # Hz
-BANDPASS_ORDER:  int   = 5
-
-MODEL_PATH:  str = os.path.join("models", "creative_model.pkl")
-SCALER_PATH: str = os.path.join("models", "creative_scaler.pkl")
+from services.eeg_base import InferenceResult, load_artifact
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Preprocessing
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
+# CONFIG
+# ===========================================================================
+
+FS_ORIGINAL: int = 125
+WINDOW_SECONDS: int = 5
+WINDOW_SAMPLES: int = FS_ORIGINAL * WINDOW_SECONDS  # 625
+N_CHANNELS: int = 16
+
+NOTCH_FREQ: float = 50.0
+NOTCH_QUALITY: float = 30.0
+BANDPASS_LOW: float = 1.0
+BANDPASS_HIGH: float = 45.0
+BANDPASS_ORDER: int = 4
+
+MODEL_PATH: str = os.path.join("models", "rf_eeg_model.pkl")
+
+
+# ===========================================================================
+# Preprocessing (mengikuti preprocessing_openbci.py)
+# ===========================================================================
+
+def notch_filter(
+    data: np.ndarray,
+    fs: int = FS_ORIGINAL,
+    freq: float = NOTCH_FREQ,
+    quality: float = NOTCH_QUALITY,
+) -> np.ndarray:
+    b, a = iirnotch(freq, quality, fs)
+    return filtfilt(b, a, data, axis=0)
+
+
+def bandpass_filter(
+    data: np.ndarray,
+    fs: int = FS_ORIGINAL,
+    low: float = BANDPASS_LOW,
+    high: float = BANDPASS_HIGH,
+    order: int = BANDPASS_ORDER,
+) -> np.ndarray:
+    nyq = fs / 2.0
+    b, a = cast(
+        tuple[np.ndarray, np.ndarray],
+        butter(order, [low / nyq, high / nyq], btype="band", output="ba"),
+    )
+    return filtfilt(b, a, data, axis=0)
+
+
+def standardize_per_window(data: np.ndarray) -> np.ndarray:
+    """
+    Z-score per channel untuk 1 window.
+    Input/Output shape: [n_samples, n_channels]
+    """
+    mean = np.mean(data, axis=0, keepdims=True)
+    std = np.std(data, axis=0, keepdims=True)
+    std = np.where(std < 1e-12, 1.0, std)
+    return (data - mean) / std
+
 
 def preprocess(eeg_window: np.ndarray) -> np.ndarray:
     """
-    Preprocessing sinyal EEG mentah untuk task creative.
-
     Parameters
     ----------
-    eeg_window : np.ndarray  shape [n_channels, n_samples]
+    eeg_window : np.ndarray shape [n_channels, n_samples] (fs=125)
 
     Returns
     -------
-    filtered : np.ndarray  shape [N_CHANNELS, n_samples]  (float64)
+    np.ndarray shape [n_samples, n_channels]
     """
     use_ch = min(N_CHANNELS, eeg_window.shape[0])
-    out = np.empty((use_ch, eeg_window.shape[1]), dtype=np.float64)
+    data = eeg_window[:use_ch].astype(np.float64).T  # [n_samples, n_channels]
 
-    for ch in range(use_ch):
-        x = np.ascontiguousarray(eeg_window[ch]).astype(np.float64).copy()
-        x -= x.mean()                                              # DC removal
-        x = apply_notch(x, SAMPLING_RATE, NOTCH_FREQ, NOTCH_QUALITY)  # notch 50 Hz
-        x = apply_bandpass(x, SAMPLING_RATE,
-                           BANDPASS_LOW, BANDPASS_HIGH,
-                           BANDPASS_ORDER)                         # bandpass
-        out[ch] = x
+    filtered = notch_filter(data)
+    filtered = bandpass_filter(filtered)
+    filtered = standardize_per_window(filtered)
 
-    return out
+    return np.asarray(filtered, dtype=np.float64)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # Feature Extraction
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 def extract_features(preprocessed: np.ndarray) -> np.ndarray:
     """
-    Ekstraksi fitur dari window yang sudah dipreprocess (creative).
-
-    Fitur: mean(PSD Welch) per channel → 1 nilai/channel
-    Panjang output: N_CHANNELS fitur
+    Mean per channel dari 1 window.
 
     Parameters
     ----------
-    preprocessed : np.ndarray  shape [N_CHANNELS, n_samples]
+    preprocessed : np.ndarray shape [n_samples, n_channels]
 
     Returns
     -------
-    features : np.ndarray  1-D, panjang = N_CHANNELS
+    np.ndarray shape [n_channels]
     """
-    features = []
-    nperseg  = min(preprocessed.shape[1], WINDOW_SAMPLES)
-
-    for ch in range(preprocessed.shape[0]):
-        _, psd = compute_welch(preprocessed[ch], SAMPLING_RATE, nperseg)
-        features.append(float(np.mean(psd)))   # mean PSD — sama seperti notebook
-
-    return np.asarray(features, dtype=np.float64)
+    return np.mean(preprocessed, axis=0).astype(np.float64)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # Classifier
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 class CreativeClassifier:
-    """
-    Classifier EEG untuk task CREATIVE.
-    Load model + scaler dari file, jalankan full pipeline sendiri.
-    """
 
-    def __init__(self,
-                 model_path: str = MODEL_PATH,
-                 scaler_path: str = SCALER_PATH):
-        self.model_path  = model_path
-        self.scaler_path = scaler_path
-        self.model  = load_artifact(model_path,  "Creative Model")
-        self.scaler = load_artifact(scaler_path, "Creative Scaler")
+    def __init__(self, model_path: str = MODEL_PATH):
+        self.model_path = model_path
+        self.model: Any = None
+        self.scaler: Any = None
+        self.feature_cols: Optional[list[str]] = None
+        self.label_names: Optional[list[str]] = None
+        self.selected_channels: Optional[list[int]] = None
+        self.reload()
 
     def reload(self):
-        """Hot-reload model dan scaler dari disk tanpa restart aplikasi."""
-        self.model  = load_artifact(self.model_path,  "Creative Model")
-        self.scaler = load_artifact(self.scaler_path, "Creative Scaler")
+        loaded = load_artifact(self.model_path, "Creative Model")
+
+        if isinstance(loaded, dict) and "model" in loaded:
+            self.model = loaded.get("model")
+            self.scaler = loaded.get("scaler")
+            self.feature_cols = loaded.get("feature_cols")
+            self.label_names = loaded.get("label_names")
+            self.selected_channels = loaded.get("selected_channels")
+            return
+
+        raise RuntimeError(
+            "[Creative] Format model tidak sesuai. "
+            "Gunakan file joblib berisi model_package dengan key 'model' dan 'scaler'."
+        )
 
     @property
     def is_loaded(self) -> bool:
         return self.model is not None
 
     def scale(self, features: np.ndarray) -> np.ndarray:
-        """Scale fitur dengan scaler training. Kembalikan apa adanya jika tidak ada scaler."""
         if self.scaler is None:
             return features
         try:
-            return self.scaler.transform(features.reshape(1, -1)).flatten().astype(np.float64)
+            x2 = features.reshape(1, -1)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="X does not have valid feature names.*",
+                    category=UserWarning,
+                )
+                scaled = self.scaler.transform(x2)
+            return np.asarray(scaled, dtype=np.float64).flatten()
         except Exception as e:
             print(f"[Creative] scaling error: {e}")
             return features
 
+    def _normalize_label(self, pred: Any) -> int:
+        """
+        Normalize output label model menjadi int untuk kompatibilitas UI/app.
+        - Jika sudah numeric -> cast ke int
+        - Jika string class (contoh: "IDR") -> map ke index dari classes_/label_names
+        """
+        if isinstance(pred, (int, np.integer)):
+            return int(pred)
+
+        if isinstance(pred, (float, np.floating)):
+            return int(pred)
+
+        if isinstance(pred, str):
+            text = pred.strip()
+            if text.lstrip("-").isdigit():
+                return int(text)
+
+            if hasattr(self.model, "classes_"):
+                classes = [str(c) for c in list(getattr(self.model, "classes_"))]
+                if text in classes:
+                    return classes.index(text)
+
+            if self.label_names:
+                names = [str(n) for n in self.label_names]
+                if text in names:
+                    return names.index(text)
+
+        raise RuntimeError(f"[Creative] Label prediksi tidak dikenali: {pred!r}")
+
     def predict(self, eeg_window: np.ndarray) -> InferenceResult:
         """
-        Full pipeline creative: preprocess → extract → scale → predict.
-
-        Parameters
-        ----------
-        eeg_window : np.ndarray  shape [n_channels, n_samples]  (raw EEG dari board)
-
-        Returns
-        -------
-        InferenceResult  dengan .label (int) dan .score (float | None)
+        Full pipeline: preprocess -> extract -> scale -> predict.
         """
         if self.model is None:
             raise RuntimeError(
                 f"[Creative] Model belum diload.\n"
                 f"  Letakkan file di: {os.path.abspath(self.model_path)}"
             )
+        if not hasattr(self.model, "predict"):
+            raise RuntimeError("[Creative] Artifact model tidak punya method predict().")
 
-        filtered  = preprocess(eeg_window)
-        features  = extract_features(filtered)
-        scaled    = self.scale(features)
+        preprocessed = preprocess(eeg_window)
+        features = extract_features(preprocessed)
+        scaled = self.scale(features)
 
-        x2    = scaled.reshape(1, -1)
-        label = int(self.model.predict(x2)[0])
+        x2 = scaled.reshape(1, -1)
+        raw_label = self.model.predict(x2)[0]
+        label = self._normalize_label(raw_label)
 
         score: Optional[float] = None
         if hasattr(self.model, "predict_proba"):

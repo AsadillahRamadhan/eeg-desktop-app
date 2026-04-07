@@ -9,16 +9,14 @@ from services.data_recorder import DataRecorder
 
 class RecordCreativeView(ctk.CTkFrame):
     """
-    Record Creative (Window 60 detik)
-    - Chart menampilkan jumlah label dalam 60 detik terakhir (sliding window)
+    Record Creative (Cumulative Counter)
+    - Chart menampilkan jumlah label kumulatif selama sesi berjalan
     - Start/Stop + Reset
-    - Update acak + animasi smooth
+    - Update dari prediksi realtime + animasi smooth
     - Saat pertama kali dibuka, chart langsung tampil ukuran besar
     - Timestamp di atas chart
     - Sumbu Y kiri tanpa angka (kosong)
     """
-
-    WINDOW_SECONDS = 60
 
     DEFAULT_CANVAS_W = 900
     DEFAULT_CANVAS_H = 520
@@ -50,6 +48,7 @@ class RecordCreativeView(ctk.CTkFrame):
 
         self._redraw_job = None
         self._last_update_ts = None  # timestamp atas chart
+        self._last_seen_pred_ts = None
 
         self.build_ui()
         self.after(50, self.draw_chart)
@@ -317,8 +316,8 @@ class RecordCreativeView(ctk.CTkFrame):
         if self._last_update_ts is None:
             ts_text = f" • Updated: --:--:--"
         else:
-            ts = time.strftime("%H:%M:%S", time.localtime(self._last_update_ts))
-            ts_text = f" • Updated: {ts}"
+            ts_text = time.strftime("%H:%M:%S", time.localtime(self._last_update_ts))
+            ts_text = f" • Updated: {ts_text}"
 
         self.canvas.create_text(
             margin_left,

@@ -309,7 +309,7 @@ class PowerTestView(ctk.CTkFrame):
             border_color="#CC0000",
             hover_color="#FF5252"
         )
-        self.result_label.configure(text="Monitoring label per 10 detik...")
+        self.result_label.configure(text="Monitoring label per 5 detik...")
         self.poll_prediction()
     
     def stop_test(self):
@@ -379,7 +379,11 @@ class PowerTestView(ctk.CTkFrame):
                 mapped_value = {0: 3, 1: 6, 2: 10}.get(label, 0)
                 self.update_display(mapped_value)
                 self.refresh_prediction_status()
-                self.show_completion_message(label)
+
+                # Selesai saat progress sudah penuh
+                if self.current_value >= 10:
+                    self.show_completion_message(label)
+                    return
 
         self.test_timer = self.after(500, self.poll_prediction)
     

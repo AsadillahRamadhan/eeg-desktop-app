@@ -1,9 +1,11 @@
 import customtkinter as ctk
 import tkinter as tk
-from tkinter import Canvas
+from tkinter import Canvas, filedialog, messagebox
 from PIL import Image, ImageTk
 import time
 from typing import Any
+
+from services.data_recorder import DataRecorder
 
 
 class PowerTestView(ctk.CTkFrame):
@@ -15,6 +17,9 @@ class PowerTestView(ctk.CTkFrame):
         self.test_timer = None
         self.last_seen_timestamp = None
         self.latest_label_value = None
+
+        # DataRecorder untuk save/export
+        self.recorder = DataRecorder()
         
         self.plant_images = self.load_plant_images()
         
@@ -137,6 +142,20 @@ class PowerTestView(ctk.CTkFrame):
             text_color="#1A1A40"
         )
         self.result_label.grid(row=2, column=0, pady=(10, 0))
+
+        self.save_btn = ctk.CTkButton(
+            left_frame,
+            text="💾 Save Data",
+            width=200,
+            height=45,
+            corner_radius=10,
+            fg_color="#4A90D9",
+            hover_color="#3A7BC8",
+            text_color="white",
+            font=("Segoe UI", 14, "bold"),
+            command=self.save_data,
+        )
+        self.save_btn.grid(row=3, column=0, pady=(10, 0))
         
         right_frame = ctk.CTkFrame(
             main_frame,
@@ -283,6 +302,7 @@ class PowerTestView(ctk.CTkFrame):
         self.current_value = 0
         self.last_seen_timestamp = None
         self.latest_label_value = None
+        self.recorder.clear()
         self.start_button.configure(
             text="Stop Test",
             fg_color="#FF6B6B",
@@ -342,6 +362,20 @@ class PowerTestView(ctk.CTkFrame):
                 self.last_seen_timestamp = ts
                 self.latest_label_value = label
 
+                # Simpan ke recorder
+                task = self._task_key()
+                if task == "creative":
+                    label_map = {0: "Idea Generation", 1: "Idea Elaboration", 2: "Idea Evaluation"}
+                else:
+                    label_map = {0: "Memory Recall", 1: "Arithmetic Calculation", 2: "Visual Pattern"}
+                label_name = label_map.get(label, f"Label {label}")
+                score = payload.get("score")
+                self.recorder.add_event(
+                    timestamp=ts if ts else time.time(),
+                    label=label_name,
+                    score=score,
+                )
+
                 mapped_value = {0: 3, 1: 6, 2: 10}.get(label, 0)
                 self.update_display(mapped_value)
                 self.refresh_prediction_status()
@@ -394,3 +428,35 @@ class PowerTestView(ctk.CTkFrame):
         ).pack(pady=(0, 20), padx=30)
         
         self.after(3000, overlay.destroy)
+
+    # ================= Save / Export =================
+    def save_data(self):
+        if not self.recorder.has_data():
+            messagebox.showinfo("Save Data", "Belum ada data yang direkam.\nSilakan Start to Test terlebih dahulu.")
+            return
+
+        task = self._task_key()
+        filepath = filedialog.asksaveasfilename(
+            title=f"Save {task.capitalize()} Data",
+            defaultextension=".csv",
+            filetypes=[
+                ("CSV Files", "*.csv"),
+                ("Text Files", "*.txt"),
+                ("All Files", "*.*"),
+            ],
+            initialfile=f"{task}_test_{time.strftime('%Y%m%d_%H%M%S')}",
+        )
+
+        if not filepath:
+            return
+
+        try:
+            saved_path = self.recorder.save(filepath)
+            messagebox.showinfo(
+                "Save Berhasil",
+                f"Data berhasil disimpan!\n\n"
+                f"File: {saved_path}\n"
+                f"Total: {self.recorder.count} prediksi"
+            )
+        except Exception as e:
+            messagebox.showerror("Save Gagal", f"Gagal menyimpan data:\n{e}")

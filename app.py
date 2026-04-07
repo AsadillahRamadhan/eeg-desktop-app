@@ -1,9 +1,12 @@
 import customtkinter as ctk
 from tkinter import messagebox
 import os
+import queue
 import threading
 import time
 from typing import Any
+
+import numpy as np
 
 from components.sidebar import Sidebar
 from views.dashboard import DashboardView
@@ -47,6 +50,12 @@ class App(ctk.CTk):
         self.current_view_name: str | None = None
 
         self.last_window_ts = None
+        # Queue-based predictions agar tidak ada yang terlewat
+        self._prediction_queues: dict[str, queue.Queue] = {
+            "cognitive": queue.Queue(),
+            "creative": queue.Queue(),
+        }
+        # Tetap simpan latest untuk backward compatibility (views lama)
         self.predictions: dict[str, dict[str, Any]] = {
             "cognitive": {"label": None, "score": None, "timestamp": None},
             "creative": {"label": None, "score": None, "timestamp": None},
@@ -90,6 +99,22 @@ class App(ctk.CTk):
     def get_latest_prediction(self, task: str):
         return self.predictions.get(task, {"label": None, "score": None, "timestamp": None})
 
+    def drain_predictions(self, task: str) -> list[dict[str, Any]]:
+        """
+        Ambil SEMUA prediksi yang ada di queue untuk task tertentu.
+        Dipanggil oleh view tick() agar tidak ada prediksi yang terlewat.
+        """
+        q = self._prediction_queues.get(task)
+        if q is None:
+            return []
+        results = []
+        while True:
+            try:
+                results.append(q.get_nowait())
+            except queue.Empty:
+                break
+        return results
+
     def _start_inference(self):
         if self.is_inference_running:
             return
@@ -121,12 +146,26 @@ class App(ctk.CTk):
         score_text = f"{score:.4f}" if score is not None else "n/a"
         print(f"[{ts_text}] [{task}] label={label}, score={score_text}")
 
+    def _get_active_recorder(self):
+        """Dapatkan DataRecorder dari view yang sedang aktif recording."""
+        if self.active_task == "cognitive":
+            view = self.frames.get("RecordCognitiveView")
+        elif self.active_task == "creative":
+            view = self.frames.get("RecordCreativeView")
+        else:
+            return None
+        if view is not None and hasattr(view, "recorder"):
+            return view.recorder
+        return None
+
     def _inference_loop(self):
         """
         Pipeline inferensi EEG (background thread).
         BoardReader.get_latest() → [n_channels, n_samples] µV @ 125 Hz
           cognitive_pipeline : upsample → notch → bandpass → window → PSD → predict
           creative_pipeline  : notch → bandpass → extract → predict
+
+        Juga menyimpan raw EEG ke DataRecorder untuk export format OpenBCI.
         """
         if self.board_reader is None:
             return
@@ -139,16 +178,24 @@ class App(ctk.CTk):
 
         while self.is_inference_running and self.board_reader is not None and self.board_reader.connected:
             try:
-                eeg = self.board_reader.get_latest(max_raw)  # [n_ch, max_raw] µV
+                # Ambil data lengkap (EEG + accel + timestamp + sample_index)
+                full_data = self.board_reader.get_latest_full(max_raw)
+                eeg_full = full_data["eeg"]       # [n_ch, max_raw] µV
+                accel    = full_data["accel"]      # [3, max_raw] g
+                ts_arr   = full_data["timestamp"]  # [max_raw] Unix
+                idx_arr  = full_data["sample_index"]  # [max_raw]
 
-                if eeg.shape[1] < max_raw:
+                if eeg_full.shape[1] < max_raw:
                     time.sleep(0.5)
                     continue
 
-                cog_window = eeg[:, -n_cog:]   # [n_ch, n_cog] → cognitive pipeline
-                cre_window = eeg[:, -n_cre:]   # [n_ch, n_cre] → creative pipeline
+                cog_window = eeg_full[:, -n_cog:]  # [n_ch, n_cog]
+                cre_window = eeg_full[:, -n_cre:]  # [n_ch, n_cre]
 
                 now_ts = time.time()
+
+                # Simpan raw EEG ke recorder milik view aktif
+                recorder = self._get_active_recorder()
 
                 # Jalankan inferensi hanya untuk menu aktif.
                 if self.active_task == "cognitive":
@@ -159,6 +206,24 @@ class App(ctk.CTk):
                         "score":     cog.score,
                         "timestamp": now_ts,
                     }
+                    self._prediction_queues["cognitive"].put({
+                        "label":     cog.label,
+                        "score":     cog.score,
+                        "timestamp": now_ts,
+                    })
+                    # Simpan raw window EEG yang dipakai cognitive
+                    if recorder is not None:
+                        recorder.set_board_info(
+                            n_channels=self.board_reader.n_eeg_channels,
+                            sampling_rate=fs,
+                        )
+                        recorder.add_raw_samples(
+                            eeg=cog_window,
+                            accel=accel[:, -n_cog:],
+                            timestamps=ts_arr[-n_cog:],
+                            sample_indices=idx_arr[-n_cog:],
+                        )
+
                 elif self.active_task == "creative":
                     cre = self.creative_classifier.predict(cre_window)
                     self._log_prediction("creative", cre.label, cre.score, now_ts)
@@ -167,6 +232,23 @@ class App(ctk.CTk):
                         "score":     cre.score,
                         "timestamp": now_ts,
                     }
+                    self._prediction_queues["creative"].put({
+                        "label":     cre.label,
+                        "score":     cre.score,
+                        "timestamp": now_ts,
+                    })
+                    # Simpan raw window EEG yang dipakai creative
+                    if recorder is not None:
+                        recorder.set_board_info(
+                            n_channels=self.board_reader.n_eeg_channels,
+                            sampling_rate=fs,
+                        )
+                        recorder.add_raw_samples(
+                            eeg=cre_window,
+                            accel=accel[:, -n_cre:],
+                            timestamps=ts_arr[-n_cre:],
+                            sample_indices=idx_arr[-n_cre:],
+                        )
 
                 self.last_window_ts = now_ts
 

@@ -1,7 +1,10 @@
 import customtkinter as ctk
-import random
+import os
 import time
-from tkinter import Canvas
+from tkinter import Canvas, filedialog, messagebox
+from typing import Any
+
+from services.data_recorder import DataRecorder
 
 
 class RecordCreativeView(ctk.CTkFrame):
@@ -34,9 +37,13 @@ class RecordCreativeView(ctk.CTkFrame):
         # list of (timestamp, label)
         self.events = []
 
+        # DataRecorder untuk save/export
+        self.recorder = DataRecorder()
+
         self.is_running = False
         self.timer = None
         self.anim_timer = None
+        self._last_seen_pred_ts = None
 
         self._anim_step = 0
         self._anim_steps_total = 12
@@ -110,7 +117,7 @@ class RecordCreativeView(ctk.CTkFrame):
         self.toggle_btn = ctk.CTkButton(
             btn_row,
             text="Start",
-            width=260,
+            width=180,
             height=54,
             corner_radius=14,
             fg_color="#28C76F",
@@ -119,12 +126,12 @@ class RecordCreativeView(ctk.CTkFrame):
             font=("Segoe UI", 14, "bold"),
             command=self.toggle_counter,
         )
-        self.toggle_btn.pack(side="left", padx=18)
+        self.toggle_btn.pack(side="left", padx=10)
 
         self.reset_btn = ctk.CTkButton(
             btn_row,
             text="Reset",
-            width=260,
+            width=180,
             height=54,
             corner_radius=14,
             fg_color="#FFFFFF",
@@ -135,7 +142,21 @@ class RecordCreativeView(ctk.CTkFrame):
             hover_color="#E8E8E8",
             command=self.reset_counter,
         )
-        self.reset_btn.pack(side="left", padx=18)
+        self.reset_btn.pack(side="left", padx=10)
+
+        self.save_btn = ctk.CTkButton(
+            btn_row,
+            text="💾 Save Data",
+            width=180,
+            height=54,
+            corner_radius=14,
+            fg_color="#4A90D9",
+            hover_color="#3A7BC8",
+            text_color="white",
+            font=("Segoe UI", 14, "bold"),
+            command=self.save_data,
+        )
+        self.save_btn.pack(side="left", padx=10)
 
     def on_show(self):
         self.after(1, self.draw_chart)
@@ -157,12 +178,24 @@ class RecordCreativeView(ctk.CTkFrame):
             self.stop_counter()
 
     def start_counter(self):
+        app: Any = self.winfo_toplevel()
+        if not getattr(app, "is_eeg_connected", False):
+            return
+
+        if hasattr(app, "start_task_inference"):
+            app.start_task_inference("creative")
+
         self.is_running = True
+        self._last_seen_pred_ts = None
         self.toggle_btn.configure(text="Stop", fg_color="#FF4C4C", hover_color="#E63E3E")
         self.schedule_tick()
 
     def stop_counter(self):
         self.is_running = False
+        app: Any = self.winfo_toplevel()
+        if hasattr(app, "stop_task_inference"):
+            app.stop_task_inference("creative")
+
         self.toggle_btn.configure(text="Start", fg_color="#28C76F", hover_color="#22B463")
 
         if self.timer:
@@ -175,6 +208,8 @@ class RecordCreativeView(ctk.CTkFrame):
     def reset_counter(self):
         self.stop_counter()
         self.events.clear()
+        self.recorder.clear()
+        self._last_seen_pred_ts = None
         for k in self.counts:
             self.counts[k] = 0
             self.display_counts[k] = 0.0
@@ -185,19 +220,38 @@ class RecordCreativeView(ctk.CTkFrame):
     def schedule_tick(self):
         if not self.is_running:
             return
-        self.timer = self.after(random.randint(350, 900), self.tick)
+        self.timer = self.after(500, self.tick)
 
     def tick(self):
         if not self.is_running:
             return
 
-        now = time.time()
-        self._last_update_ts = now
+        app: Any = self.winfo_toplevel()
 
-        key = random.choice(self.labels)
-        self.events.append((now, key))
+        # Drain SEMUA prediksi baru dari queue (tidak ada yang terlewat)
+        new_preds = app.drain_predictions("creative") if hasattr(app, "drain_predictions") else []
 
-        cutoff = now - self.WINDOW_SECONDS
+        for payload in new_preds:
+            label = payload.get("label")
+            pred_ts = payload.get("timestamp")
+
+            if label in (0, 1, 2, 3) and pred_ts is not None:
+                self._last_update_ts = pred_ts
+
+                label_map = {
+                    0: "Idea Generation",
+                    1: "Idea Elaboration",
+                    2: "Idea Evaluation",
+                    3: "Others",
+                }
+                key = label_map.get(label, "Others")
+                self.events.append((pred_ts, key))
+
+                # Simpan ke recorder untuk export
+                score = payload.get("score")
+                self.recorder.add_event(timestamp=pred_ts, label=key, score=score)
+
+        cutoff = time.time() - self.WINDOW_SECONDS
         self.events = [(t, k) for (t, k) in self.events if t >= cutoff]
 
         new_counts = {k: 0 for k in self.labels}
@@ -326,3 +380,45 @@ class RecordCreativeView(ctk.CTkFrame):
                 fill="#555555",
                 font=("Segoe UI", 11),
             )
+
+    # ================= Save / Export =================
+    def save_data(self):
+        if not self.recorder.has_data():
+            messagebox.showinfo("Save Data", "Belum ada data yang direkam.\nSilakan Start terlebih dahulu.")
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            title="Save Creative Raw EEG Data",
+            defaultextension=".txt",
+            filetypes=[
+                ("OpenBCI Raw TXT", "*.txt"),
+                ("CSV (Predictions Only)", "*.csv"),
+                ("All Files", "*.*"),
+            ],
+            initialfile=f"creative_raw_{time.strftime('%Y%m%d_%H%M%S')}",
+        )
+
+        if not filepath:
+            return
+
+        try:
+            saved_path = self.recorder.save(filepath)
+
+            ext = os.path.splitext(filepath)[1].lower()
+            if ext == ".txt":
+                detail = (
+                    f"Format: OpenBCI Raw TXT\n"
+                    f"Raw Samples: {self.recorder.raw_count}\n"
+                    f"Predictions: {self.recorder.count}"
+                )
+            else:
+                detail = f"Predictions: {self.recorder.count}"
+
+            messagebox.showinfo(
+                "Save Berhasil",
+                f"Data berhasil disimpan!\n\n"
+                f"File: {saved_path}\n"
+                f"{detail}"
+            )
+        except Exception as e:
+            messagebox.showerror("Save Gagal", f"Gagal menyimpan data:\n{e}")

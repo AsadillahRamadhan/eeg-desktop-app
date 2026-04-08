@@ -21,6 +21,8 @@ from typing import Any, Optional, cast
 
 import numpy as np
 from scipy.signal import butter, filtfilt, iirnotch
+from scipy.stats import skew, kurtosis
+from sklearn.preprocessing import MinMaxScaler
 
 from services.eeg_base import InferenceResult, load_artifact
 
@@ -72,33 +74,43 @@ def bandpass_filter(
     return filtfilt(b, a, data, axis=0)
 
 
-def standardize_per_window(data: np.ndarray) -> np.ndarray:
+def normalize_per_window(data: np.ndarray) -> np.ndarray:
     """
-    Z-score per channel untuk 1 window.
+    Normalisasi MinMax (0-1) per channel untuk 1 window.
+    Mengikuti preprocessing_openbci.py structure.
     Input/Output shape: [n_samples, n_channels]
     """
-    mean = np.mean(data, axis=0, keepdims=True)
-    std = np.std(data, axis=0, keepdims=True)
-    std = np.where(std < 1e-12, 1.0, std)
-    return (data - mean) / std
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    normalized = scaler.fit_transform(data)
+    return np.asarray(normalized, dtype=np.float64)
 
 
 def preprocess(eeg_window: np.ndarray) -> np.ndarray:
     """
+    Pipeline preprocessing: notch → bandpass → normalize MinMax
+    
     Parameters
     ----------
-    eeg_window : np.ndarray shape [n_channels, n_samples] (fs=125)
+    eeg_window : np.ndarray  shape [n_channels, n_samples] (fs=125)
 
     Returns
     -------
-    np.ndarray shape [n_samples, n_channels]
+    np.ndarray  shape [n_samples, n_channels] (normalized 0-1)
     """
     use_ch = min(N_CHANNELS, eeg_window.shape[0])
-    data = eeg_window[:use_ch].astype(np.float64).T  # [n_samples, n_channels]
+    data = eeg_window[:use_ch].astype(np.float64)
 
+    # Format mengikuti training: [n_samples, n_channels]
+    data = data.T  # [n_channels, n_samples] → [n_samples, n_channels]
+
+    # Notch 50 Hz (line noise)
     filtered = notch_filter(data)
+    
+    # Bandpass 1-45 Hz (EEG range)
     filtered = bandpass_filter(filtered)
-    filtered = standardize_per_window(filtered)
+    
+    # MinMax normalisasi (0-1) seperti preprocessing_openbci.py
+    filtered = normalize_per_window(filtered)
 
     return np.asarray(filtered, dtype=np.float64)
 
@@ -109,17 +121,41 @@ def preprocess(eeg_window: np.ndarray) -> np.ndarray:
 
 def extract_features(preprocessed: np.ndarray) -> np.ndarray:
     """
-    Mean per channel dari 1 window.
+    Ekstrak 132 statistical features dari preprocessed EEG window.
+    (8 features per channel × 16 channels = 128 features)
+    + 4 global summary features = 132 total
 
     Parameters
     ----------
-    preprocessed : np.ndarray shape [n_samples, n_channels]
+    preprocessed : np.ndarray  shape [n_samples, n_channels]
 
     Returns
     -------
-    np.ndarray shape [n_channels]
+    np.ndarray  shape [132]  statistical features per channel + global
     """
-    return np.mean(preprocessed, axis=0).astype(np.float64)
+    features = []
+    
+    # Extract 8 statistical features per channel (128 total)
+    for ch in range(preprocessed.shape[1]):
+        ch_data = preprocessed[:, ch]
+        
+        features.append(np.mean(ch_data))           # Mean
+        features.append(np.std(ch_data))            # Std
+        features.append(np.min(ch_data))            # Min
+        features.append(np.max(ch_data))            # Max
+        features.append(np.median(ch_data))         # Median
+        features.append(skew(ch_data))              # Skewness
+        features.append(kurtosis(ch_data))          # Kurtosis
+        features.append(np.max(ch_data) - np.min(ch_data))  # Range
+    
+    # Add 4 global summary features
+    all_data = preprocessed.flatten()
+    features.append(np.mean(all_data))              # Global mean
+    features.append(np.std(all_data))               # Global std
+    features.append(np.sum(all_data ** 2))          # Total energy
+    features.append(np.ptp(all_data))               # Global peak-to-peak
+    
+    return np.asarray(features, dtype=np.float64)  # shape [132]
 
 
 # ===========================================================================

@@ -17,6 +17,7 @@ class InferenceResult:
     """Result dari EEG inference - label prediksi + confidence score."""
     label: int
     score: Optional[float] = None
+    features: Optional[np.ndarray] = None  # fitur per channel [n_channels]
 
 
 def load_artifact(path: str, name: str = "Artifact"):

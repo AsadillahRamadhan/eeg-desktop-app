@@ -152,7 +152,7 @@ class RecordCognitiveView(ctk.CTkFrame):
             hover_color="#3A7BC8",
             text_color="white",
             font=("Segoe UI", 14, "bold"),
-            command=self.save_data,
+            command=self.show_save_options,
         )
         self.save_btn.pack(side="left", padx=10)
 
@@ -248,7 +248,8 @@ class RecordCognitiveView(ctk.CTkFrame):
 
                 # Simpan ke recorder untuk export
                 score = payload.get("score")
-                self.recorder.add_event(timestamp=pred_ts, label=key, score=score)
+                features = payload.get("features")
+                self.recorder.add_event(timestamp=pred_ts, label=key, score=score, features=features)
 
         new_counts = {k: 0 for k in self.labels}
         for _, k in self.events:
@@ -380,18 +381,73 @@ class RecordCognitiveView(ctk.CTkFrame):
             )
 
     # ================= Save / Export =================
-    def save_data(self):
+    def show_save_options(self):
+        """Tampilkan popup pilihan save: Raw Data atau Hasil Klasifikasi."""
         if not self.recorder.has_data():
             messagebox.showinfo("Save Data", "Belum ada data yang direkam.\nSilakan Start terlebih dahulu.")
             return
 
+        popup = ctk.CTkToplevel(self)
+        popup.title("Pilih Jenis Data")
+        popup.geometry("360x200")
+        popup.resizable(False, False)
+        popup.grab_set()
+        popup.focus_force()
+
+        # Center popup relative to main window
+        popup.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() // 2) - 180
+        y = self.winfo_rooty() + (self.winfo_height() // 2) - 100
+        popup.geometry(f"+{x}+{y}")
+
+        ctk.CTkLabel(
+            popup,
+            text="Pilih jenis data yang ingin disimpan:",
+            font=("Segoe UI", 14, "bold"),
+        ).pack(pady=(25, 20))
+
+        btn_frame = ctk.CTkFrame(popup, fg_color="transparent")
+        btn_frame.pack(pady=5)
+
+        ctk.CTkButton(
+            btn_frame,
+            text="💾 Save Raw Data",
+            width=150,
+            height=45,
+            corner_radius=12,
+            fg_color="#4A90D9",
+            hover_color="#3A7BC8",
+            text_color="white",
+            font=("Segoe UI", 13, "bold"),
+            command=lambda: self._do_save_raw(popup),
+        ).pack(side="left", padx=8)
+
+        ctk.CTkButton(
+            btn_frame,
+            text="📊 Save Klasifikasi",
+            width=150,
+            height=45,
+            corner_radius=12,
+            fg_color="#8B5CF6",
+            hover_color="#7C3AED",
+            text_color="white",
+            font=("Segoe UI", 13, "bold"),
+            command=lambda: self._do_save_classification(popup),
+        ).pack(side="left", padx=8)
+
+    def _do_save_raw(self, popup):
+        """Save raw EEG data ke file TXT format OpenBCI."""
+        popup.destroy()
+
+        if not self.recorder.has_raw_data():
+            messagebox.showinfo("Save Raw Data", "Belum ada raw data yang direkam.")
+            return
+
         filepath = filedialog.asksaveasfilename(
             title="Save Cognitive Raw EEG Data",
-            defaultextension="",
+            defaultextension=".txt",
             filetypes=[
-                ("Both Raw + Classifications", ""),
-                ("OpenBCI Raw TXT Only", "*.txt"),
-                ("CSV (Predictions Only)", "*.csv"),
+                ("OpenBCI Raw TXT", "*.txt"),
                 ("All Files", "*.*"),
             ],
             initialfile=f"cognitive_raw_{time.strftime('%Y%m%d_%H%M%S')}",
@@ -401,51 +457,51 @@ class RecordCognitiveView(ctk.CTkFrame):
             return
 
         try:
-            # Get classification summary
-            label_counts = self.recorder.get_classification_summary()
-            
-            # Check save mode
-            ext = os.path.splitext(filepath)[1].lower()
-            
-            if ext == "" or filepath.endswith(os.sep):
-                # Save both raw and classifications separately
-                base_path = filepath if not filepath.endswith(os.sep) else filepath[:-1]
-                raw_path, class_path = self.recorder.save_separate_files(base_path)
-                
-                summary_msg = "Files berhasil disimpan!\n\n"
-                summary_msg += f"Raw Data: {raw_path}\n"
-                summary_msg += f"Classifications: {class_path}\n\n"
-                summary_msg += "=== CLASSIFICATION SUMMARY ===\n"
-                summary_msg += f"Total Predictions: {self.recorder.count}\n\n"
-                for label, count in sorted(label_counts.items()):
-                    percentage = (count / self.recorder.count * 100) if self.recorder.count > 0 else 0
-                    summary_msg += f"{label}: {count} ({percentage:.1f}%)\n"
-                
-                messagebox.showinfo("Save Berhasil", summary_msg)
-            elif ext == ".txt":
-                saved_path = self.recorder.save(filepath)
-                
-                summary_msg = f"Raw EEG data berhasil disimpan!\n\n"
-                summary_msg += f"File: {saved_path}\n"
-                summary_msg += f"Raw Samples: {self.recorder.raw_count}\n"
-                summary_msg += f"Predictions: {self.recorder.count}\n\n"
-                summary_msg += "=== CLASSIFICATION SUMMARY ===\n"
-                for label, count in sorted(label_counts.items()):
-                    percentage = (count / self.recorder.count * 100) if self.recorder.count > 0 else 0
-                    summary_msg += f"{label}: {count} ({percentage:.1f}%)\n"
-                
-                messagebox.showinfo("Save Berhasil", summary_msg)
-            else:
-                saved_path = self.recorder.save(filepath)
-                
-                summary_msg = f"Predictions berhasil disimpan!\n\n"
-                summary_msg += f"File: {saved_path}\n"
-                summary_msg += f"Total: {self.recorder.count}\n\n"
-                summary_msg += "=== CLASSIFICATION SUMMARY ===\n"
-                for label, count in sorted(label_counts.items()):
-                    percentage = (count / self.recorder.count * 100) if self.recorder.count > 0 else 0
-                    summary_msg += f"{label}: {count} ({percentage:.1f}%)\n"
-                
-                messagebox.showinfo("Save Berhasil", summary_msg)
+            saved_path = self.recorder.save(filepath)
+
+            summary_msg = f"Raw EEG data berhasil disimpan!\n\n"
+            summary_msg += f"File: {saved_path}\n"
+            summary_msg += f"Total Raw Samples: {self.recorder.raw_count}\n"
+
+            messagebox.showinfo("Save Berhasil", summary_msg)
         except Exception as e:
-            messagebox.showerror("Save Gagal", f"Gagal menyimpan data:\n{e}")
+            messagebox.showerror("Save Gagal", f"Gagal menyimpan raw data:\n{e}")
+
+    def _do_save_classification(self, popup):
+        """Save hasil klasifikasi (channel 1-16 + label) ke file CSV."""
+        popup.destroy()
+
+        if self.recorder.count == 0:
+            messagebox.showinfo("Save Klasifikasi", "Belum ada hasil klasifikasi.")
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            title="Save Hasil Klasifikasi Cognitive",
+            defaultextension=".csv",
+            filetypes=[
+                ("CSV File", "*.csv"),
+                ("All Files", "*.*"),
+            ],
+            initialfile=f"cognitive_klasifikasi_{time.strftime('%Y%m%d_%H%M%S')}",
+        )
+
+        if not filepath:
+            return
+
+        try:
+            saved_path = self.recorder.save(filepath)
+
+            label_counts = self.recorder.get_classification_summary()
+            total = self.recorder.count
+
+            summary_msg = f"Hasil klasifikasi berhasil disimpan!\n\n"
+            summary_msg += f"File: {saved_path}\n"
+            summary_msg += f"Total Predictions: {total}\n\n"
+            for label, count in sorted(label_counts.items()):
+                percentage = (count / total * 100) if total > 0 else 0
+                summary_msg += f"{label}: {count} ({percentage:.1f}%)\n"
+
+            messagebox.showinfo("Save Berhasil", summary_msg)
+        except Exception as e:
+            messagebox.showerror("Save Gagal", f"Gagal menyimpan klasifikasi:\n{e}")
+

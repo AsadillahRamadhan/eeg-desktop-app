@@ -181,4 +181,6 @@ class CognitiveClassifier:
             proba = self.model.predict_proba(x2)[0]
             score = float(np.max(proba))
 
-        return InferenceResult(label=label, score=score)
+        # Simpan fitur yang sudah matang (setelah preprocessing + scaling)
+        # = data yang siap diklasifikasi oleh model
+        return InferenceResult(label=label, score=score, features=scaled.copy())

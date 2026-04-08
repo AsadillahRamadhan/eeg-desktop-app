@@ -176,9 +176,9 @@ class App(ctk.CTk):
         max_raw = max(n_cog, n_cre)
         sleep_secs = min(COG_SECONDS, CRE_SECONDS)
 
-        # Track timestamp terakhir yang sudah disimpan ke recorder
-        # agar tidak ada duplikasi raw data (ring buffer tidak consume)
-        last_saved_ts = 0.0
+        # Track sample_index terakhir yang sudah disimpan ke recorder
+        # (sample_index lebih reliable daripada timestamp untuk dedup)
+        last_saved_sample_idx = -1
 
         while self.is_inference_running and self.board_reader is not None and self.board_reader.connected:
             try:
@@ -209,11 +209,13 @@ class App(ctk.CTk):
                         "label":     cog.label,
                         "score":     cog.score,
                         "timestamp": now_ts,
+                        "features":  cog.features,
                     }
                     self._prediction_queues["cognitive"].put({
                         "label":     cog.label,
                         "score":     cog.score,
                         "timestamp": now_ts,
+                        "features":  cog.features,
                     })
                     # Simpan raw window EEG yang dipakai cognitive
                     if recorder is not None:
@@ -221,17 +223,18 @@ class App(ctk.CTk):
                             n_channels=self.board_reader.n_eeg_channels,
                             sampling_rate=fs,
                         )
-                        # Filter: hanya simpan sample BARU (belum pernah disave)
-                        raw_ts = ts_arr[-n_cog:]
-                        new_mask = raw_ts > last_saved_ts
+                        # Filter: hanya simpan sample BARU berdasarkan sample_index
+                        raw_idx = idx_arr[-n_cog:]
+                        raw_ts  = ts_arr[-n_cog:]
+                        new_mask = raw_idx > last_saved_sample_idx
                         if np.any(new_mask):
                             recorder.add_raw_samples(
                                 eeg=cog_window[:, new_mask],
                                 accel=accel[:, -n_cog:][:, new_mask],
                                 timestamps=raw_ts[new_mask],
-                                sample_indices=idx_arr[-n_cog:][new_mask],
+                                sample_indices=raw_idx[new_mask],
                             )
-                            last_saved_ts = float(raw_ts[new_mask][-1])
+                            last_saved_sample_idx = int(raw_idx[new_mask][-1])
 
                 elif self.active_task == "creative":
                     cre = self.creative_classifier.predict(cre_window)
@@ -240,11 +243,13 @@ class App(ctk.CTk):
                         "label":     cre.label,
                         "score":     cre.score,
                         "timestamp": now_ts,
+                        "features":  cre.features,
                     }
                     self._prediction_queues["creative"].put({
                         "label":     cre.label,
                         "score":     cre.score,
                         "timestamp": now_ts,
+                        "features":  cre.features,
                     })
                     # Simpan raw window EEG yang dipakai creative
                     if recorder is not None:
@@ -252,22 +257,24 @@ class App(ctk.CTk):
                             n_channels=self.board_reader.n_eeg_channels,
                             sampling_rate=fs,
                         )
-                        # Filter: hanya simpan sample BARU (belum pernah disave)
-                        raw_ts = ts_arr[-n_cre:]
-                        new_mask = raw_ts > last_saved_ts
+                        # Filter: hanya simpan sample BARU berdasarkan sample_index
+                        raw_idx = idx_arr[-n_cre:]
+                        raw_ts  = ts_arr[-n_cre:]
+                        new_mask = raw_idx > last_saved_sample_idx
                         if np.any(new_mask):
                             recorder.add_raw_samples(
                                 eeg=cre_window[:, new_mask],
                                 accel=accel[:, -n_cre:][:, new_mask],
                                 timestamps=raw_ts[new_mask],
-                                sample_indices=idx_arr[-n_cre:][new_mask],
+                                sample_indices=raw_idx[new_mask],
                             )
-                            last_saved_ts = float(raw_ts[new_mask][-1])
+                            last_saved_sample_idx = int(raw_idx[new_mask][-1])
 
                 self.last_window_ts = now_ts
 
             except Exception as e:
                 print(f"[inference_loop] error: {e}")
+
 
             time.sleep(sleep_secs)
 

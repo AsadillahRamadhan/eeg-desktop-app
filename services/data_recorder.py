@@ -41,6 +41,7 @@ class PredictionEvent:
     timestamp: float
     label: str
     score: Optional[float] = None
+    features: Optional[np.ndarray] = None  # fitur per channel [n_channels]
 
 
 class DataRecorder:
@@ -81,8 +82,12 @@ class DataRecorder:
         timestamp: float,
         label: str,
         score: Optional[float] = None,
+        features: Optional[np.ndarray] = None,
     ) -> None:
-        self._events.append(PredictionEvent(timestamp=timestamp, label=label, score=score))
+        self._events.append(PredictionEvent(
+            timestamp=timestamp, label=label, score=score,
+            features=features.copy() if features is not None else None,
+        ))
 
     def add_raw_samples(
         self,
@@ -302,29 +307,34 @@ class DataRecorder:
         return os.path.abspath(filepath)
 
     def _save_csv(self, filepath: str) -> str:
+        """
+        Export hasil klasifikasi dalam format:
+        channel 1, channel 2, ..., channel 16, label
+
+        Setiap baris = 1 window prediksi, kolom channel berisi
+        nilai fitur matang (setelah filter, windowing, ekstraksi fitur).
+        """
         with open(filepath, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["No", "Timestamp", "DateTime", "Label", "Score"])
-            for i, ev in enumerate(self._events, start=1):
-                dt_str = dt.datetime.fromtimestamp(ev.timestamp).strftime("%Y-%m-%d %H:%M:%S.%f")
-                score_str = f"{ev.score:.4f}" if ev.score is not None else ""
-                writer.writerow([i, f"{ev.timestamp:.6f}", dt_str, ev.label, score_str])
 
-            # Summary
-            writer.writerow([])
-            writer.writerow(["=== CLASSIFICATION RESULTS SUMMARY ==="])
-            writer.writerow(["Total Predictions", len(self._events)])
-            writer.writerow([])
-
-            label_counts: dict[str, int] = {}
+            # Tentukan jumlah channel dari event pertama yang punya features
+            n_ch = self._n_channels
             for ev in self._events:
-                label_counts[ev.label] = label_counts.get(ev.label, 0) + 1
-            
-            writer.writerow(["Label", "Count", "Percentage"])
-            total = len(self._events)
-            for label, count in sorted(label_counts.items()):
-                percentage = (count / total * 100) if total > 0 else 0
-                writer.writerow([label, count, f"{percentage:.1f}%"])
+                if ev.features is not None:
+                    n_ch = len(ev.features)
+                    break
+
+            # Header: channel 1, channel 2, ..., channel N, label
+            header = [f"channel {i+1}" for i in range(n_ch)] + ["label"]
+            writer.writerow(header)
+
+            for ev in self._events:
+                if ev.features is not None:
+                    row = [f"{v:.6f}" for v in ev.features]
+                else:
+                    row = ["0.0"] * n_ch
+                row.append(ev.label)
+                writer.writerow(row)
 
         return os.path.abspath(filepath)
     
@@ -361,28 +371,8 @@ class DataRecorder:
         self._save_openbci_txt(raw_path)
         
         # Save classifications detail → _classifications.csv
+        # Format: channel 1, channel 2, ..., channel 16, label
         class_path = base_filepath + "_classifications.csv"
-        with open(class_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["CLASSIFICATION RESULTS"])
-            writer.writerow([])
-            writer.writerow(["Total Predictions", len(self._events)])
-            writer.writerow([])
-            
-            # Summary by label
-            label_counts = self.get_classification_summary()
-            writer.writerow(["Label", "Count", "Percentage"])
-            total = len(self._events)
-            for label, count in sorted(label_counts.items()):
-                percentage = (count / total * 100) if total > 0 else 0
-                writer.writerow([label, count, f"{percentage:.1f}%"])
-            
-            writer.writerow([])
-            writer.writerow(["DETAILED CLASSIFICATION LOG"])
-            writer.writerow(["No", "Timestamp", "DateTime", "Label", "Score"])
-            for i, ev in enumerate(self._events, start=1):
-                dt_str = dt.datetime.fromtimestamp(ev.timestamp).strftime("%Y-%m-%d %H:%M:%S.%f")
-                score_str = f"{ev.score:.4f}" if ev.score is not None else "-"
-                writer.writerow([i, f"{ev.timestamp:.6f}", dt_str, ev.label, score_str])
+        self._save_csv(class_path)
         
         return os.path.abspath(raw_path), os.path.abspath(class_path)

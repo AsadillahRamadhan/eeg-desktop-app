@@ -26,6 +26,7 @@ Penggunaan:
 from __future__ import annotations
 
 import csv
+import datetime as dt
 import os
 import time
 from dataclasses import dataclass, field
@@ -56,6 +57,8 @@ class DataRecorder:
         #                'timestamp': [n_samples], 'sample_index': [n_samples]}
         self._raw_batches: list[dict] = []
         self._raw_sample_count: int = 0
+        self._last_raw_timestamp: Optional[float] = None
+        self._last_raw_sample_index: Optional[int] = None
 
         # Metadata board (diisi saat pertama kali add_raw_samples)
         self._n_channels: int = 16
@@ -104,19 +107,54 @@ class DataRecorder:
         if accel is None:
             accel = np.zeros((3, n_samples), dtype=np.float64)
 
-        if timestamps is None:
-            # Generate timestamps berdasarkan waktu sekarang
-            now = time.time()
-            timestamps = np.linspace(
-                now - n_samples / self._sampling_rate,
-                now,
-                n_samples,
-                endpoint=False,
-            )
-
         if sample_indices is None:
             start_idx = self._raw_sample_count
-            sample_indices = np.arange(start_idx, start_idx + n_samples)
+            sample_indices = np.arange(start_idx, start_idx + n_samples, dtype=np.int64)
+        else:
+            sample_indices = np.asarray(sample_indices, dtype=np.int64)
+
+        dt_sec = 1.0 / self._sampling_rate
+
+        if timestamps is None:
+            if self._last_raw_timestamp is not None and self._last_raw_sample_index is not None:
+                first_ts = self._last_raw_timestamp + (
+                    int(sample_indices[0]) - self._last_raw_sample_index
+                ) * dt_sec
+                timestamps = first_ts + (
+                    sample_indices - int(sample_indices[0])
+                ) * dt_sec
+            else:
+                # Generate timestamps berdasarkan waktu sekarang
+                now = time.time()
+                timestamps = np.array([
+                    now - (n_samples - 1 - i) * dt_sec for i in range(n_samples)
+                ], dtype=np.float64)
+        else:
+            timestamps = np.asarray(timestamps, dtype=np.float64)
+
+            # Cek apakah timestamps punya variasi sub-detik yang cukup
+            # (atau spacing tidak realistis terhadap sample rate)
+            ts_range = float(np.ptp(timestamps))  # max - min
+            expected_range = (n_samples - 1) / self._sampling_rate  # harusnya ~durasi window
+            spacing_too_small = False
+            if n_samples > 1:
+                diffs = np.diff(timestamps)
+                median_dt = float(np.median(diffs))
+                spacing_too_small = median_dt < (dt_sec * 0.25)
+
+            if (n_samples > 1 and ts_range < expected_range * 0.1) or spacing_too_small:
+                # Timestamp board kurang valid → rekonstruksi dari sample index.
+                if self._last_raw_timestamp is not None and self._last_raw_sample_index is not None:
+                    first_ts = self._last_raw_timestamp + (
+                        int(sample_indices[0]) - self._last_raw_sample_index
+                    ) * dt_sec
+                else:
+                    mid_ts = float(np.mean(timestamps))
+                    first_ts = mid_ts - ((n_samples - 1) * dt_sec / 2.0)
+
+                timestamps = first_ts + (
+                    sample_indices - int(sample_indices[0])
+                ) * dt_sec
 
         self._raw_batches.append({
             'eeg': eeg.copy(),
@@ -125,11 +163,15 @@ class DataRecorder:
             'sample_index': sample_indices.copy(),
         })
         self._raw_sample_count += n_samples
+        self._last_raw_timestamp = float(timestamps[-1])
+        self._last_raw_sample_index = int(sample_indices[-1])
 
     def clear(self) -> None:
         self._events.clear()
         self._raw_batches.clear()
         self._raw_sample_count = 0
+        self._last_raw_timestamp = None
+        self._last_raw_sample_index = None
 
     # ── queries ──────────────────────────────────────────────────────
 
@@ -228,15 +270,12 @@ class DataRecorder:
                     for a in range(accel.shape[0]):
                         parts.append(f" {accel[a, s]:.4f}")
 
-                    # Timestamp (raw Unix)
-                    parts.append(f" {ts[s]:.6f}")
+                    # Timestamp (raw Unix, microsecond precision)
+                    ts_val = float(ts[s])
+                    parts.append(f" {ts_val:.6f}")
 
-                    # Timestamp (formatted)
-                    frac = ts[s] % 1
-                    ts_fmt = time.strftime(
-                        "%H:%M:%S", time.localtime(ts[s])
-                    )
-                    ts_fmt += f".{int(frac * 1000):03d}"
+                    # Timestamp (formatted, include microseconds)
+                    ts_fmt = dt.datetime.fromtimestamp(ts_val).strftime("%H:%M:%S.%f")
                     parts.append(f" {ts_fmt}")
 
                     f.write(",".join(parts) + "\n")
@@ -256,11 +295,9 @@ class DataRecorder:
                 f.write("%\n")
                 f.write("% No, Pred_Timestamp, DateTime, Label, Score\n")
                 for i, ev in enumerate(self._events, start=1):
-                    dt = time.strftime(
-                        "%Y-%m-%d %H:%M:%S", time.localtime(ev.timestamp)
-                    )
+                    dt_str = dt.datetime.fromtimestamp(ev.timestamp).strftime("%Y-%m-%d %H:%M:%S.%f")
                     score_str = f"{ev.score:.4f}" if ev.score is not None else "-"
-                    f.write(f"% {i}, {ev.timestamp:.3f}, {dt}, {ev.label}, {score_str}\n")
+                    f.write(f"% {i}, {ev.timestamp:.6f}, {dt_str}, {ev.label}, {score_str}\n")
 
         return os.path.abspath(filepath)
 
@@ -269,19 +306,83 @@ class DataRecorder:
             writer = csv.writer(f)
             writer.writerow(["No", "Timestamp", "DateTime", "Label", "Score"])
             for i, ev in enumerate(self._events, start=1):
-                dt = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ev.timestamp))
+                dt_str = dt.datetime.fromtimestamp(ev.timestamp).strftime("%Y-%m-%d %H:%M:%S.%f")
                 score_str = f"{ev.score:.4f}" if ev.score is not None else ""
-                writer.writerow([i, f"{ev.timestamp:.3f}", dt, ev.label, score_str])
+                writer.writerow([i, f"{ev.timestamp:.6f}", dt_str, ev.label, score_str])
 
             # Summary
             writer.writerow([])
-            writer.writerow(["=== SUMMARY ==="])
+            writer.writerow(["=== CLASSIFICATION RESULTS SUMMARY ==="])
             writer.writerow(["Total Predictions", len(self._events)])
+            writer.writerow([])
 
             label_counts: dict[str, int] = {}
             for ev in self._events:
                 label_counts[ev.label] = label_counts.get(ev.label, 0) + 1
+            
+            writer.writerow(["Label", "Count", "Percentage"])
+            total = len(self._events)
             for label, count in sorted(label_counts.items()):
-                writer.writerow([label, count])
+                percentage = (count / total * 100) if total > 0 else 0
+                writer.writerow([label, count, f"{percentage:.1f}%"])
 
         return os.path.abspath(filepath)
+    
+    def get_classification_summary(self) -> dict[str, int]:
+        """
+        Get count of classifications per label.
+        
+        Returns
+        -------
+        dict[str, int]
+            Mapping dari label → count
+        """
+        label_counts: dict[str, int] = {}
+        for ev in self._events:
+            label_counts[ev.label] = label_counts.get(ev.label, 0) + 1
+        return label_counts
+    
+    def save_separate_files(self, base_filepath: str) -> tuple[str, str]:
+        """
+        Save raw EEG dan classification results ke file terpisah.
+        
+        Parameters
+        ----------
+        base_filepath : str
+            Path tanpa extension, misal "creative_data"
+        
+        Returns
+        -------
+        tuple[str, str]
+            (path_raw_eeg, path_classifications)
+        """
+        # Save raw EEG → .txt
+        raw_path = base_filepath + "_raw.txt"
+        self._save_openbci_txt(raw_path)
+        
+        # Save classifications detail → _classifications.csv
+        class_path = base_filepath + "_classifications.csv"
+        with open(class_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["CLASSIFICATION RESULTS"])
+            writer.writerow([])
+            writer.writerow(["Total Predictions", len(self._events)])
+            writer.writerow([])
+            
+            # Summary by label
+            label_counts = self.get_classification_summary()
+            writer.writerow(["Label", "Count", "Percentage"])
+            total = len(self._events)
+            for label, count in sorted(label_counts.items()):
+                percentage = (count / total * 100) if total > 0 else 0
+                writer.writerow([label, count, f"{percentage:.1f}%"])
+            
+            writer.writerow([])
+            writer.writerow(["DETAILED CLASSIFICATION LOG"])
+            writer.writerow(["No", "Timestamp", "DateTime", "Label", "Score"])
+            for i, ev in enumerate(self._events, start=1):
+                dt_str = dt.datetime.fromtimestamp(ev.timestamp).strftime("%Y-%m-%d %H:%M:%S.%f")
+                score_str = f"{ev.score:.4f}" if ev.score is not None else "-"
+                writer.writerow([i, f"{ev.timestamp:.6f}", dt_str, ev.label, score_str])
+        
+        return os.path.abspath(raw_path), os.path.abspath(class_path)

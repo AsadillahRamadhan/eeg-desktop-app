@@ -387,9 +387,10 @@ class RecordCognitiveView(ctk.CTkFrame):
 
         filepath = filedialog.asksaveasfilename(
             title="Save Cognitive Raw EEG Data",
-            defaultextension=".txt",
+            defaultextension="",
             filetypes=[
-                ("OpenBCI Raw TXT", "*.txt"),
+                ("Both Raw + Classifications", ""),
+                ("OpenBCI Raw TXT Only", "*.txt"),
                 ("CSV (Predictions Only)", "*.csv"),
                 ("All Files", "*.*"),
             ],
@@ -400,23 +401,51 @@ class RecordCognitiveView(ctk.CTkFrame):
             return
 
         try:
-            saved_path = self.recorder.save(filepath)
-
+            # Get classification summary
+            label_counts = self.recorder.get_classification_summary()
+            
+            # Check save mode
             ext = os.path.splitext(filepath)[1].lower()
-            if ext == ".txt":
-                detail = (
-                    f"Format: OpenBCI Raw TXT\n"
-                    f"Raw Samples: {self.recorder.raw_count}\n"
-                    f"Predictions: {self.recorder.count}"
-                )
+            
+            if ext == "" or filepath.endswith(os.sep):
+                # Save both raw and classifications separately
+                base_path = filepath if not filepath.endswith(os.sep) else filepath[:-1]
+                raw_path, class_path = self.recorder.save_separate_files(base_path)
+                
+                summary_msg = "Files berhasil disimpan!\n\n"
+                summary_msg += f"Raw Data: {raw_path}\n"
+                summary_msg += f"Classifications: {class_path}\n\n"
+                summary_msg += "=== CLASSIFICATION SUMMARY ===\n"
+                summary_msg += f"Total Predictions: {self.recorder.count}\n\n"
+                for label, count in sorted(label_counts.items()):
+                    percentage = (count / self.recorder.count * 100) if self.recorder.count > 0 else 0
+                    summary_msg += f"{label}: {count} ({percentage:.1f}%)\n"
+                
+                messagebox.showinfo("Save Berhasil", summary_msg)
+            elif ext == ".txt":
+                saved_path = self.recorder.save(filepath)
+                
+                summary_msg = f"Raw EEG data berhasil disimpan!\n\n"
+                summary_msg += f"File: {saved_path}\n"
+                summary_msg += f"Raw Samples: {self.recorder.raw_count}\n"
+                summary_msg += f"Predictions: {self.recorder.count}\n\n"
+                summary_msg += "=== CLASSIFICATION SUMMARY ===\n"
+                for label, count in sorted(label_counts.items()):
+                    percentage = (count / self.recorder.count * 100) if self.recorder.count > 0 else 0
+                    summary_msg += f"{label}: {count} ({percentage:.1f}%)\n"
+                
+                messagebox.showinfo("Save Berhasil", summary_msg)
             else:
-                detail = f"Predictions: {self.recorder.count}"
-
-            messagebox.showinfo(
-                "Save Berhasil",
-                f"Data berhasil disimpan!\n\n"
-                f"File: {saved_path}\n"
-                f"{detail}"
-            )
+                saved_path = self.recorder.save(filepath)
+                
+                summary_msg = f"Predictions berhasil disimpan!\n\n"
+                summary_msg += f"File: {saved_path}\n"
+                summary_msg += f"Total: {self.recorder.count}\n\n"
+                summary_msg += "=== CLASSIFICATION SUMMARY ===\n"
+                for label, count in sorted(label_counts.items()):
+                    percentage = (count / self.recorder.count * 100) if self.recorder.count > 0 else 0
+                    summary_msg += f"{label}: {count} ({percentage:.1f}%)\n"
+                
+                messagebox.showinfo("Save Berhasil", summary_msg)
         except Exception as e:
             messagebox.showerror("Save Gagal", f"Gagal menyimpan data:\n{e}")

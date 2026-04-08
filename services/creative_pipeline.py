@@ -207,6 +207,7 @@ class CreativeClassifier:
         """
         Full pipeline: preprocess -> extract -> scale -> predict.
         """
+        print(eeg_window)
         if self.model is None:
             raise RuntimeError(
                 f"[Creative] Model belum diload.\n"

@@ -13,8 +13,8 @@ from views.dashboard import DashboardView
 from views.cognitive import CognitiveView
 from views.creative import CreativeView
 from views.power_test import PowerTestView
-from views.cog10 import RecordCognitiveView
-from views.cre10 import RecordCreativeView
+from views.record_cognitive import RecordCognitiveView
+from views.record_creative import RecordCreativeView
 from services.cognitive_pipeline import CognitiveClassifier, WINDOW_SECONDS as COG_SECONDS, FS_ORIGINAL as COG_FS
 from services.creative_pipeline import CreativeClassifier, WINDOW_SECONDS as CRE_SECONDS
 from services.board_reader import BoardReader, BRAINFLOW_OK
@@ -176,6 +176,10 @@ class App(ctk.CTk):
         max_raw = max(n_cog, n_cre)
         sleep_secs = min(COG_SECONDS, CRE_SECONDS)
 
+        # Track timestamp terakhir yang sudah disimpan ke recorder
+        # agar tidak ada duplikasi raw data (ring buffer tidak consume)
+        last_saved_ts = 0.0
+
         while self.is_inference_running and self.board_reader is not None and self.board_reader.connected:
             try:
                 # Ambil data lengkap (EEG + accel + timestamp + sample_index)
@@ -217,12 +221,17 @@ class App(ctk.CTk):
                             n_channels=self.board_reader.n_eeg_channels,
                             sampling_rate=fs,
                         )
-                        recorder.add_raw_samples(
-                            eeg=cog_window,
-                            accel=accel[:, -n_cog:],
-                            timestamps=ts_arr[-n_cog:],
-                            sample_indices=idx_arr[-n_cog:],
-                        )
+                        # Filter: hanya simpan sample BARU (belum pernah disave)
+                        raw_ts = ts_arr[-n_cog:]
+                        new_mask = raw_ts > last_saved_ts
+                        if np.any(new_mask):
+                            recorder.add_raw_samples(
+                                eeg=cog_window[:, new_mask],
+                                accel=accel[:, -n_cog:][:, new_mask],
+                                timestamps=raw_ts[new_mask],
+                                sample_indices=idx_arr[-n_cog:][new_mask],
+                            )
+                            last_saved_ts = float(raw_ts[new_mask][-1])
 
                 elif self.active_task == "creative":
                     cre = self.creative_classifier.predict(cre_window)
@@ -243,12 +252,17 @@ class App(ctk.CTk):
                             n_channels=self.board_reader.n_eeg_channels,
                             sampling_rate=fs,
                         )
-                        recorder.add_raw_samples(
-                            eeg=cre_window,
-                            accel=accel[:, -n_cre:],
-                            timestamps=ts_arr[-n_cre:],
-                            sample_indices=idx_arr[-n_cre:],
-                        )
+                        # Filter: hanya simpan sample BARU (belum pernah disave)
+                        raw_ts = ts_arr[-n_cre:]
+                        new_mask = raw_ts > last_saved_ts
+                        if np.any(new_mask):
+                            recorder.add_raw_samples(
+                                eeg=cre_window[:, new_mask],
+                                accel=accel[:, -n_cre:][:, new_mask],
+                                timestamps=raw_ts[new_mask],
+                                sample_indices=idx_arr[-n_cre:][new_mask],
+                            )
+                            last_saved_ts = float(raw_ts[new_mask][-1])
 
                 self.last_window_ts = now_ts
 

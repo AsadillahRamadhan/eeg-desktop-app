@@ -12,9 +12,18 @@ from components.sidebar import Sidebar
 from views.dashboard import DashboardView
 from views.cognitive import CognitiveView
 from views.creative import CreativeView
-from views.power_test import PowerTestView
+from views.power_test import (
+    PowerTestView,
+    CognitiveMemoryRecallView,
+    CognitiveArithmeticCalculationView,
+    CognitiveVisualPatternView,
+    CreativeIdeaGenerationView,
+    CreativeIdeaElaborationView,
+    CreativeIdeaEvaluationView,
+)
 from views.record_cognitive import RecordCognitiveView
 from views.record_creative import RecordCreativeView
+from views.record_combined import RecordCombinedView
 from services.cognitive_pipeline import CognitiveClassifier, WINDOW_SECONDS as COG_SECONDS, FS_ORIGINAL as COG_FS
 from services.creative_pipeline import CreativeClassifier, WINDOW_SECONDS as CRE_SECONDS
 from services.board_reader import BoardReader, BRAINFLOW_OK
@@ -54,11 +63,13 @@ class App(ctk.CTk):
         self._prediction_queues: dict[str, queue.Queue] = {
             "cognitive": queue.Queue(),
             "creative": queue.Queue(),
+            "combined": queue.Queue(),
         }
         # Tetap simpan latest untuk backward compatibility (views lama)
         self.predictions: dict[str, dict[str, Any]] = {
             "cognitive": {"label": None, "score": None, "timestamp": None},
             "creative": {"label": None, "score": None, "timestamp": None},
+            "combined": {"label": None, "score": None, "timestamp": None},
         }
 
         # Load cognitive pipeline (model + scaler + preprocessing sendiri)
@@ -69,7 +80,21 @@ class App(ctk.CTk):
 
         self.frames = {}
 
-        for View in (DashboardView, CognitiveView, CreativeView, PowerTestView, RecordCognitiveView, RecordCreativeView):
+        for View in (
+            DashboardView,
+            CognitiveView,
+            CreativeView,
+            PowerTestView,
+            RecordCognitiveView,
+            RecordCreativeView,
+            RecordCombinedView,
+            CognitiveMemoryRecallView,
+            CognitiveArithmeticCalculationView,
+            CognitiveVisualPatternView,
+            CreativeIdeaGenerationView,
+            CreativeIdeaElaborationView,
+            CreativeIdeaEvaluationView,
+        ):
             frame = View(self.container)
             self.frames[View.__name__] = frame
             frame.place(relx=0, rely=0, relwidth=1, relheight=1)
@@ -130,7 +155,7 @@ class App(ctk.CTk):
         self.is_inference_running = False
 
     def start_task_inference(self, task: str):
-        if task not in ("cognitive", "creative"):
+        if task not in ("cognitive", "creative", "combined"):
             return
         self.active_task = task
         self._start_inference()
@@ -147,13 +172,10 @@ class App(ctk.CTk):
         print(f"[{ts_text}] [{task}] label={label}, score={score_text}")
 
     def _get_active_recorder(self):
-        """Dapatkan DataRecorder dari view yang sedang aktif recording."""
-        if self.active_task == "cognitive":
-            view = self.frames.get("RecordCognitiveView")
-        elif self.active_task == "creative":
-            view = self.frames.get("RecordCreativeView")
-        else:
+        """Dapatkan DataRecorder dari frame yang sedang aktif recording."""
+        if not self.current_view_name:
             return None
+        view = self.frames.get(self.current_view_name)
         if view is not None and hasattr(view, "recorder"):
             return view.recorder
         return None
@@ -269,6 +291,56 @@ class App(ctk.CTk):
                                 sample_indices=raw_idx[new_mask],
                             )
                             last_saved_sample_idx = int(raw_idx[new_mask][-1])
+
+                elif self.active_task == "combined":
+                    if recorder is not None:
+                        recorder.set_board_info(
+                            n_channels=self.board_reader.n_eeg_channels,
+                            sampling_rate=fs,
+                        )
+                        raw_idx = idx_arr[-max_raw:]
+                        raw_ts = ts_arr[-max_raw:]
+                        new_mask = raw_idx > last_saved_sample_idx
+                        if np.any(new_mask):
+                            recorder.add_raw_samples(
+                                eeg=eeg_full[:, -max_raw:][:, new_mask],
+                                accel=accel[:, -max_raw:][:, new_mask],
+                                timestamps=raw_ts[new_mask],
+                                sample_indices=raw_idx[new_mask],
+                            )
+                            last_saved_sample_idx = int(raw_idx[new_mask][-1])
+
+                    cog = self.cognitive_classifier.predict(cog_window)
+                    self._log_prediction("cognitive", cog.label, cog.score, now_ts)
+                    self.predictions["cognitive"] = {
+                        "label":     cog.label,
+                        "score":     cog.score,
+                        "timestamp": now_ts,
+                        "features":  cog.features,
+                    }
+                    self._prediction_queues["combined"].put({
+                        "task":      "cognitive",
+                        "label":     cog.label,
+                        "score":     cog.score,
+                        "timestamp": now_ts,
+                        "features":  cog.features,
+                    })
+
+                    cre = self.creative_classifier.predict(cre_window)
+                    self._log_prediction("creative", cre.label, cre.score, now_ts)
+                    self.predictions["creative"] = {
+                        "label":     cre.label,
+                        "score":     cre.score,
+                        "timestamp": now_ts,
+                        "features":  cre.features,
+                    }
+                    self._prediction_queues["combined"].put({
+                        "task":      "creative",
+                        "label":     cre.label,
+                        "score":     cre.score,
+                        "timestamp": now_ts,
+                        "features":  cre.features,
+                    })
 
                 self.last_window_ts = now_ts
 

@@ -54,13 +54,32 @@ class Sidebar(ctk.CTkFrame):
 
         self.set_active(dashboard_btn)
 
-        self.expandable_menu(
+        power_menu, power_submenu = self.expandable_menu(
             "Power Test Detection",
             self.icons["power"],
+            []
+        )
+
+        self.expandable_menu(
+            "Cognitive",
+            self.icons["chart"],
             [
-                ("Cognitive", lambda: self.navigate("CognitiveView")),
-                ("Creative", lambda: self.navigate("CreativeView")),
-            ]
+                ("Memory Recall", lambda: self.navigate("CognitiveMemoryRecallView")),
+                ("Arithmetic Calculation", lambda: self.navigate("CognitiveArithmeticCalculationView")),
+                ("Visual Pattern", lambda: self.navigate("CognitiveVisualPatternView")),
+            ],
+            parent=power_submenu,
+        )
+
+        self.expandable_menu(
+            "Creative",
+            self.icons["chart"],
+            [
+                ("Idea Generation", lambda: self.navigate("CreativeIdeaGenerationView")),
+                ("Idea Elaboration", lambda: self.navigate("CreativeIdeaElaborationView")),
+                ("Idea Evaluation", lambda: self.navigate("CreativeIdeaEvaluationView")),
+            ],
+            parent=power_submenu,
         )
 
         self.expandable_menu(
@@ -69,6 +88,7 @@ class Sidebar(ctk.CTkFrame):
             [
                 ("Cognitive", lambda: self.navigate("RecordCognitiveView")),
                 ("Creative", lambda: self.navigate("RecordCreativeView")),
+                ("Creative + Cognitive", lambda: self.navigate("RecordCombinedView")),
             ]
         )
 
@@ -99,9 +119,12 @@ class Sidebar(ctk.CTkFrame):
         return btn
 
 
-    def expandable_menu(self, title, icon, items):
-        container = ctk.CTkFrame(self, fg_color="transparent")
-        container.pack(fill="x", padx=10, pady=4)
+    def expandable_menu(self, title, icon, items=None, parent=None):
+        if parent is None:
+            parent = self
+
+        container = ctk.CTkFrame(parent, fg_color="transparent")
+        container.pack(fill="x", padx=20, pady=4)  # ← disamain jadi 20
 
         submenu = ctk.CTkFrame(container, fg_color="transparent")
 
@@ -124,53 +147,53 @@ class Sidebar(ctk.CTkFrame):
             self.set_active(header)
 
         header.configure(command=toggle_and_active)
-        header.pack(fill="x", padx=10)
+        header.pack(fill="x", padx=0)  # ← dari padx=10 jadi 0
 
-        submenu.pack(fill="x", padx=30, pady=4)
+        submenu.pack(fill="x", padx=20, pady=4)
         submenu.pack_forget()
 
         self.all_buttons.append(header)
 
-        for text, cmd in items:
-            btn = ctk.CTkButton(
-                submenu,
-                text=text,
-                image=self.icons["chart"],
-                compound="left",
-                anchor="w",
-                height=42,
-                corner_radius=10,
-                fg_color=BG_COLOR,
-                hover_color=HOVER_COLOR,
-                text_color=TEXT_COLOR,
-                font=("Segoe UI", 13),
-            )
+        if items:
+            for text, cmd in items:
+                btn = ctk.CTkButton(
+                    submenu,
+                    text=text,
+                    image=self.icons["chart"],
+                    compound="left",
+                    anchor="w",
+                    height=42,
+                    corner_radius=10,
+                    fg_color=BG_COLOR,
+                    hover_color=HOVER_COLOR,
+                    text_color=TEXT_COLOR,
+                    font=("Segoe UI", 13),
+                )
 
-            def child_click(b=btn, parent=header, c=cmd):
-                self.set_active(b, parent)
-                c()
+                def child_click(b=btn, parent=header, c=cmd):
+                    self.set_active(b, parent)
+                    c()
 
-            btn.configure(command=child_click)
-            btn.pack(fill="x", pady=4)
+                btn.configure(command=child_click)
+                btn.pack(fill="x", padx=0, pady=4)
 
-            self.all_buttons.append(btn)
+                self.all_buttons.append(btn)
+
+        return container, submenu
 
 
     def toggle(self, frame):
         if frame.winfo_ismapped():
             frame.pack_forget()
         else:
-            frame.pack(fill="x", padx=30, pady=4)
+            frame.pack(fill="x", padx=10, pady=4)  # ← dari padx=30 jadi 10
 
     def set_active(self, button, parent=None):
-        # reset semua
         for btn in self.all_buttons:
             btn.configure(fg_color=BTN_COLOR)
 
-        # aktifkan child
         button.configure(fg_color=ACTIVE_COLOR)
 
-        # aktifkan parent jika ada
         if parent:
             parent.configure(fg_color=ACTIVE_COLOR)
 
@@ -187,7 +210,7 @@ class Sidebar(ctk.CTkFrame):
             else:
                 btn.configure(
                     state="disabled",
-                    fg_color="#2A2A4A",   # warna disabled
+                    fg_color="#2A2A4A",
                     hover_color="#2A2A4A",
                     text_color="#7A7A9A"
                 )

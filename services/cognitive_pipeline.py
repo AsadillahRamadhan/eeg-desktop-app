@@ -88,7 +88,7 @@ def preprocess(eeg_window: np.ndarray) -> np.ndarray:
     nyquist = 0.5 * FS_TARGET
     low = BANDPASS_LOW / nyquist
     high = BANDPASS_HIGH / nyquist
-    b_band, a_band = butter(BANDPASS_ORDER, [low, high], btype="band")
+    b_band, a_band = butter(BANDPASS_ORDER, [low, high], btype="band")  # type: ignore[misc]
     data = np.asarray(filtfilt(b_band, a_band, data, axis=0), dtype=np.float64)
 
     return data
@@ -186,6 +186,7 @@ class CognitiveClassifier:
             return features
 
     def predict(self, eeg_window: np.ndarray) -> InferenceResult:
+        print(eeg_window)
         """
         Full pipeline: preprocess → extract → scale → predict.
 

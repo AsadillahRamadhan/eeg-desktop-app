@@ -3,16 +3,21 @@ import tkinter as tk
 from tkinter import Canvas, filedialog, messagebox
 from PIL import Image, ImageTk
 import time
+import os
 from typing import Any
 
 from services.data_recorder import DataRecorder
 
 
 class PowerTestView(ctk.CTkFrame):
-    def __init__(self, parent, title="POWER TEST"):
+    def __init__(self, parent, title="POWER TEST", task="creative", activity_label=None, activity_name=None):
         super().__init__(parent, fg_color="transparent")
         self.title_text = title
-        self.current_value = 0
+        self.task = task
+        self.activity_label = activity_label
+        self.activity_name = activity_name
+        self.current_value = 0.0
+        self.match_count = 0
         self.is_testing = False
         self.test_timer = None
         self.last_seen_timestamp = None
@@ -108,7 +113,7 @@ class PowerTestView(ctk.CTkFrame):
             fg_color="#F5F5F5",
             corner_radius=15
         )
-        self.canvas_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 20))
+        self.canvas_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 14))
         
         self.canvas = Canvas(
             self.canvas_frame,
@@ -117,23 +122,27 @@ class PowerTestView(ctk.CTkFrame):
             width=500,
             height=400
         )
-        self.canvas.pack(expand=True, fill="both", padx=10, pady=10)
+        self.canvas.pack(expand=True, fill="both", padx=8, pady=8)
         
+        # ── Button row: dikecilkan, tidak stretch penuh ──
+        button_row = ctk.CTkFrame(left_frame, fg_color="transparent")
+        button_row.grid(row=1, column=0, pady=(0, 10))  # hapus sticky="ew"
+
         self.start_button = ctk.CTkButton(
-            left_frame,
+            button_row,
             text="Start to Test",
-            width=200,
-            height=45,
+            width=150,
+            height=38,
             corner_radius=10,
             fg_color="#FFFFFF",
             border_width=2,
             border_color="#1A1A40",
             text_color="#1A1A40",
-            font=("Segoe UI", 16, "bold"),
+            font=("Segoe UI", 13, "bold"),
             hover_color="#E8E8E8",
             command=self.toggle_test
         )
-        self.start_button.grid(row=1, column=0)
+        self.start_button.grid(row=0, column=0)
 
         self.result_label = ctk.CTkLabel(
             left_frame,
@@ -143,19 +152,13 @@ class PowerTestView(ctk.CTkFrame):
         )
         self.result_label.grid(row=2, column=0, pady=(10, 0))
 
-        self.save_btn = ctk.CTkButton(
+        self.activity_info = ctk.CTkLabel(
             left_frame,
-            text="💾 Save Data",
-            width=200,
-            height=45,
-            corner_radius=10,
-            fg_color="#4A90D9",
-            hover_color="#3A7BC8",
-            text_color="white",
-            font=("Segoe UI", 14, "bold"),
-            command=self.save_data,
+            text=f"Selected activity: {self.activity_name or 'All'}",
+            font=("Segoe UI", 11),
+            text_color="#555555"
         )
-        self.save_btn.grid(row=3, column=0, pady=(10, 0))
+        self.activity_info.grid(row=3, column=0, pady=(6, 10))
         
         right_frame = ctk.CTkFrame(
             main_frame,
@@ -232,15 +235,28 @@ class PowerTestView(ctk.CTkFrame):
             width = 180
         if height <= 1:
             height = 450
-        
-        margin_left = 40
-        margin_right = 20
-        margin_top = 20
-        margin_bottom = 30
+
+        # ── Tambah margin_top lebih besar agar label muat di atas angka 10 ──
+        margin_left = 36
+        margin_right = 16
+        margin_top = 56       # ← dari 26 jadi 56, beri ruang untuk judul di atas
+        margin_bottom = 24
         
         chart_width = width - margin_left - margin_right
         chart_height = height - margin_top - margin_bottom
-        
+
+        # ── Judul di atas bar ke-10, rata tengah, tidak terpotong ──
+        self.chart_canvas.create_text(
+            width / 2,
+            margin_top - 10,   # ← tepat di atas garis angka 10
+            text=self.activity_name or "Selected Activity",
+            font=("Segoe UI", 11, "bold"),
+            fill="#1A1A40",
+            anchor="s",        # anchor bawah teks menempel ke koordinat y
+            width=chart_width,
+            justify="center",
+        )
+
         for i in range(11):
             y = margin_top + chart_height - (i * chart_height / 10)
             self.chart_canvas.create_line(
@@ -255,30 +271,49 @@ class PowerTestView(ctk.CTkFrame):
                 fill="#666666",
                 anchor="e"
             )
-        
+
+        activity_color = "#4A90D9"
+        if self.task == "creative":
+            if self.activity_label is not None:
+                activity_color = {
+                    0: "#FF8B8B",
+                    1: "#36C5E0",
+                    2: "#FFB04A",
+                }.get(self.activity_label, "#4A90D9")
+        else:
+            if self.activity_label is not None:
+                activity_color = {
+                    0: "#7B7CFF",
+                    1: "#8C6CF1",
+                    2: "#34D399",
+                }.get(self.activity_label, "#4A90D9") 
+
         if value > 0:
             bar_height = (value / 10) * chart_height
             bar_y = margin_top + chart_height - bar_height
             
-            segments = int(value * 10)
-            for i in range(segments):
-                seg_height = bar_height / segments
-                seg_y = bar_y + (i * seg_height)
-                color_value = int(100 + (155 * (1 - i / segments)))
-                color = f"#{color_value:02x}{color_value:02x}FF"
-                
-                self.chart_canvas.create_rectangle(
-                    margin_left + 10, seg_y,
-                    width - margin_right - 10, seg_y + seg_height,
-                    fill=color, outline=""
-                )
-            
-            # Bar border
             self.chart_canvas.create_rectangle(
                 margin_left + 10, bar_y,
                 width - margin_right - 10, margin_top + chart_height,
-                fill="", outline="#6666FF", width=2
+                fill=activity_color,
+                outline=activity_color,
             )
+            
+            glow_color = "#FFFFFF"
+            self.chart_canvas.create_rectangle(
+                margin_left + 10, bar_y,
+                width - margin_right - 10, bar_y + max(8, bar_height * 0.12),
+                fill=glow_color,
+                outline="",
+            )
+
+        self.chart_canvas.create_text(
+            width / 2,
+            height - 12,
+            text=f"Matches: {self.match_count}",
+            font=("Segoe UI", 10),
+            fill="#555555"
+        )
     
     def toggle_test(self):
         """Toggle start/stop test"""
@@ -299,7 +334,8 @@ class PowerTestView(ctk.CTkFrame):
             app.start_task_inference(task)
 
         self.is_testing = True
-        self.current_value = 0
+        self.current_value = 0.0
+        self.match_count = 0
         self.last_seen_timestamp = None
         self.latest_label_value = None
         self.recorder.clear()
@@ -309,7 +345,8 @@ class PowerTestView(ctk.CTkFrame):
             border_color="#CC0000",
             hover_color="#FF5252"
         )
-        self.result_label.configure(text="Monitoring label per 5 detik...")
+        self.activity_info.configure(text=f"Selected activity: {self.activity_name or 'All'}")
+        self.result_label.configure(text=f"Waiting for label {self.activity_name or 'selection'}...")
         self.poll_prediction()
     
     def stop_test(self):
@@ -330,7 +367,16 @@ class PowerTestView(ctk.CTkFrame):
         )
     
     def _task_key(self):
-        return "creative" if "CREATIVE" in self.title_text else "cognitive"
+        return self.task if hasattr(self, "task") else (
+            "creative" if "CREATIVE" in self.title_text else "cognitive"
+        )
+
+    def _label_name(self, label: int) -> str:
+        if self.task == "creative":
+            label_map = {0: "Idea Generation", 1: "Idea Elaboration", 2: "Idea Evaluation"}
+        else:
+            label_map = {0: "Memory Recall", 1: "Arithmetic Calculation", 2: "Visual Pattern"}
+        return label_map.get(label, f"Label {label}")
 
     def refresh_prediction_status(self):
         app: Any = self.winfo_toplevel()
@@ -339,12 +385,17 @@ class PowerTestView(ctk.CTkFrame):
         label = payload.get("label")
         ts = payload.get("timestamp")
 
-        if label in (0, 1, 2):
+        if label in (0, 1, 2) and (self.activity_label is None or label == self.activity_label):
+            label_text = self._label_name(label)
             if ts is not None:
                 ts_text = time.strftime("%H:%M:%S", time.localtime(ts))
-                self.result_label.configure(text=f"Latest {task} label: {label} ({ts_text})")
+                self.result_label.configure(text=f"Latest {task} label: {label_text} ({ts_text})")
             else:
-                self.result_label.configure(text=f"Latest {task} label: {label}")
+                self.result_label.configure(text=f"Latest {task} label: {label_text}")
+            self.activity_info.configure(text=f"Selected activity: {self.activity_name}")
+        else:
+            self.result_label.configure(text=f"Waiting for label {self.activity_name}...")
+            self.activity_info.configure(text=f"Selected activity: {self.activity_name}")
 
     def poll_prediction(self):
         """Polling hasil klasifikasi setiap 500 ms"""
@@ -353,34 +404,34 @@ class PowerTestView(ctk.CTkFrame):
 
         app: Any = self.winfo_toplevel()
         task = self._task_key()
-        payload = app.get_latest_prediction(task) if hasattr(app, "get_latest_prediction") else {}
-        label = payload.get("label")
-        ts = payload.get("timestamp")
+        new_preds = app.drain_predictions(task) if hasattr(app, "drain_predictions") else []
 
-        if label in (0, 1, 2):
-            if self.last_seen_timestamp != ts:
+        for payload in new_preds:
+            label = payload.get("label")
+            ts = payload.get("timestamp")
+            if label in (0, 1, 2) and (self.activity_label is None or label == self.activity_label):
+                if ts is None or ts == self.last_seen_timestamp:
+                    continue
+
                 self.last_seen_timestamp = ts
                 self.latest_label_value = label
+                self.match_count += 1
 
-                # Simpan ke recorder
-                task = self._task_key()
-                if task == "creative":
-                    label_map = {0: "Idea Generation", 1: "Idea Elaboration", 2: "Idea Evaluation"}
-                else:
-                    label_map = {0: "Memory Recall", 1: "Arithmetic Calculation", 2: "Visual Pattern"}
-                label_name = label_map.get(label, f"Label {label}")
+                label_name = self._label_name(label)
                 score = payload.get("score")
                 self.recorder.add_event(
-                    timestamp=ts if ts else time.time(),
+                    timestamp=ts,
                     label=label_name,
                     score=score,
                 )
 
-                mapped_value = {0: 3, 1: 6, 2: 10}.get(label, 0)
-                self.update_display(mapped_value)
+                increment = 0.5
+                if isinstance(score, (int, float)):
+                    increment = max(0.2, min(1.0, float(score)))
+                self.current_value = min(10.0, self.current_value + increment)
+                self.update_display(self.current_value)
                 self.refresh_prediction_status()
 
-                # Selesai saat progress sudah penuh
                 if self.current_value >= 10:
                     self.show_completion_message(label)
                     return
@@ -456,14 +507,10 @@ class PowerTestView(ctk.CTkFrame):
             return
 
         try:
-            # Get classification summary
             label_counts = self.recorder.get_classification_summary()
-            
-            # Check save mode
             ext = os.path.splitext(filepath)[1].lower()
             
             if ext == "" or filepath.endswith(os.sep):
-                # Save both raw and classifications separately
                 base_path = filepath if not filepath.endswith(os.sep) else filepath[:-1]
                 raw_path, class_path = self.recorder.save_separate_files(base_path)
                 
@@ -504,3 +551,33 @@ class PowerTestView(ctk.CTkFrame):
                 messagebox.showinfo("Save Berhasil", summary_msg)
         except Exception as e:
             messagebox.showerror("Save Gagal", f"Gagal menyimpan data:\n{e}")
+
+
+class CognitiveMemoryRecallView(PowerTestView):
+    def __init__(self, parent):
+        super().__init__(parent, title="COGNITIVE - Memory Recall", task="cognitive", activity_label=0, activity_name="Memory Recall")
+
+
+class CognitiveArithmeticCalculationView(PowerTestView):
+    def __init__(self, parent):
+        super().__init__(parent, title="COGNITIVE - Arithmetic Calculation", task="cognitive", activity_label=1, activity_name="Arithmetic Calculation")
+
+
+class CognitiveVisualPatternView(PowerTestView):
+    def __init__(self, parent):
+        super().__init__(parent, title="COGNITIVE - Visual Pattern", task="cognitive", activity_label=2, activity_name="Visual Pattern")
+
+
+class CreativeIdeaGenerationView(PowerTestView):
+    def __init__(self, parent):
+        super().__init__(parent, title="CREATIVE - Idea Generation", task="creative", activity_label=0, activity_name="Idea Generation")
+
+
+class CreativeIdeaElaborationView(PowerTestView):
+    def __init__(self, parent):
+        super().__init__(parent, title="CREATIVE - Idea Elaboration", task="creative", activity_label=1, activity_name="Idea Elaboration")
+
+
+class CreativeIdeaEvaluationView(PowerTestView):
+    def __init__(self, parent):
+        super().__init__(parent, title="CREATIVE - Idea Evaluation", task="creative", activity_label=2, activity_name="Idea Evaluation")

@@ -64,9 +64,11 @@ class Sidebar(ctk.CTkFrame):
             "Cognitive",
             self.icons["chart"],
             [
-                ("Memory Recall", lambda: self.navigate("CognitiveMemoryRecallView")),
-                ("Arithmetic Calculation", lambda: self.navigate("CognitiveArithmeticCalculationView")),
-                ("Visual Pattern", lambda: self.navigate("CognitiveVisualPatternView")),
+                ("MATB-II", lambda: self.navigate("CognitiveMATBIIView")),
+                ("N-Back", lambda: self.navigate("CognitiveNBackView")),
+                ("PVT", lambda: self.navigate("CognitivePVTView")),
+                ("Flanker", lambda: self.navigate("CognitiveFlankerView")),
+                ("Other", lambda: self.navigate("CognitiveOtherView")),
             ],
             parent=power_submenu,
         )

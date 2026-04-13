@@ -10,7 +10,7 @@ from services.data_recorder import DataRecorder
 class RecordCombinedView(ctk.CTkFrame):
     """
     Record Combined (Cognitive + Creative)
-    - 8 bars: 4 labels creative + 4 labels cognitive
+    - 9 bars: 4 labels creative + 5 labels cognitive
     - Start/Stop + Reset
     - Update realtime dari kedua queue prediksi
     - Timestamp di atas chart
@@ -33,10 +33,11 @@ class RecordCombinedView(ctk.CTkFrame):
             "Creative Others",
         ]
         self.cognitive_labels = [
-            "Memory Recall",
-            "Arithmetic Calculation",
-            "Visual Pattern",
-            "Cognitive Others",
+            "MATB-II",
+            "N-Back",
+            "PVT",
+            "Flanker",
+            "Cognitive Other",
         ]
         self.labels = self.creative_labels + self.cognitive_labels
 
@@ -47,7 +48,7 @@ class RecordCombinedView(ctk.CTkFrame):
         self.recorder = DataRecorder()
 
         self.creative_colors = ["#7B7CFF", "#FF8B8B", "#36C5E0", "#FFB04A"]
-        self.cognitive_colors = ["#8C6CF1", "#4A90D9", "#34D399", "#F59E0B"]
+        self.cognitive_colors = ["#8C6CF1", "#4A90D9", "#34D399", "#F59E0B", "#EC4899"]
 
         self.is_running = False
         self.timer = None
@@ -289,7 +290,9 @@ class RecordCombinedView(ctk.CTkFrame):
             pred_ts = payload.get("timestamp")
             task = payload.get("task")
 
-            if label in (0, 1, 2, 3) and pred_ts is not None and task is not None:
+            valid_creative = task == "creative" and label in (0, 1, 2, 3)
+            valid_cognitive = task != "creative" and label in (0, 1, 2, 3, 4)
+            if (valid_creative or valid_cognitive) and pred_ts is not None and task is not None:
                 self._last_update_ts = pred_ts
 
                 if task == "creative":
@@ -301,13 +304,14 @@ class RecordCombinedView(ctk.CTkFrame):
                     }
                 else:
                     label_map = {
-                        0: "Memory Recall",
-                        1: "Arithmetic Calculation",
-                        2: "Visual Pattern",
-                        3: "Cognitive Others",
+                        0: "MATB-II",
+                        1: "N-Back",
+                        2: "PVT",
+                        3: "Flanker",
+                        4: "Cognitive Other",
                     }
 
-                key = label_map.get(label, "Others")
+                key = label_map.get(label, "Cognitive Other")
                 self.events.append((pred_ts, key))
 
                 score = payload.get("score")

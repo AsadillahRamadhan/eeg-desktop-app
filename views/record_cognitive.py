@@ -27,7 +27,7 @@ class RecordCognitiveView(ctk.CTkFrame):
         self.navigate = navigate
         self.title_text = title
 
-        self.labels = ["Memory Recall", "Arithmetic Calculation", "Visual Pattern", "Others"]
+        self.labels = ["MATB-II", "N-Back", "PVT", "Flanker", "Other"]
 
         self.counts = {k: 0 for k in self.labels}
         self.display_counts = {k: 0.0 for k in self.labels}
@@ -234,16 +234,17 @@ class RecordCognitiveView(ctk.CTkFrame):
             label = payload.get("label")
             pred_ts = payload.get("timestamp")
 
-            if label in (0, 1, 2, 3) and pred_ts is not None:
+            if label in (0, 1, 2, 3, 4) and pred_ts is not None:
                 self._last_update_ts = pred_ts
 
                 label_map = {
-                    0: "Memory Recall",
-                    1: "Arithmetic Calculation",
-                    2: "Visual Pattern",
-                    3: "Others",
+                    0: "MATB-II",
+                    1: "N-Back",
+                    2: "PVT",
+                    3: "Flanker",
+                    4: "Other",
                 }
-                key = label_map.get(label, "Others")
+                key = label_map.get(label, "Other")
                 self.events.append((pred_ts, key))
 
                 # Simpan ke recorder untuk export
@@ -345,7 +346,7 @@ class RecordCognitiveView(ctk.CTkFrame):
         gap = 30
         bar_w = (chart_w - gap * (len(labels) - 1)) / len(labels)
 
-        colors = ["#7B7CFF", "#FF8B8B", "#36C5E0", "#FFB04A"]
+        colors = ["#7B7CFF", "#FF8B8B", "#36C5E0", "#FFB04A", "#4FD080"]
         min_bar_px = 18
 
         for i, (lab, v) in enumerate(zip(labels, values)):

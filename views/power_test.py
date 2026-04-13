@@ -283,10 +283,12 @@ class PowerTestView(ctk.CTkFrame):
         else:
             if self.activity_label is not None:
                 activity_color = {
-                    0: "#7B7CFF",
-                    1: "#8C6CF1",
-                    2: "#34D399",
-                }.get(self.activity_label, "#4A90D9") 
+                    0: "#7B7CFF",   # MATB-II
+                    1: "#8C6CF1",   # N-Back
+                    2: "#34D399",   # PVT
+                    3: "#F59E0B",   # Flanker
+                    4: "#EC4899",   # Other
+                }.get(self.activity_label, "#4A90D9")
 
         if value > 0:
             bar_height = (value / 10) * chart_height
@@ -375,7 +377,13 @@ class PowerTestView(ctk.CTkFrame):
         if self.task == "creative":
             label_map = {0: "Idea Generation", 1: "Idea Elaboration", 2: "Idea Evaluation"}
         else:
-            label_map = {0: "Memory Recall", 1: "Arithmetic Calculation", 2: "Visual Pattern"}
+            label_map = {
+                0: "MATB-II",
+                1: "N-Back",
+                2: "PVT",
+                3: "Flanker",
+                4: "Other",
+            }
         return label_map.get(label, f"Label {label}")
 
     def refresh_prediction_status(self):
@@ -385,7 +393,8 @@ class PowerTestView(ctk.CTkFrame):
         label = payload.get("label")
         ts = payload.get("timestamp")
 
-        if label in (0, 1, 2) and (self.activity_label is None or label == self.activity_label):
+        valid_labels = (0, 1, 2) if self.task == "creative" else (0, 1, 2, 3, 4)
+        if label in valid_labels and (self.activity_label is None or label == self.activity_label):
             label_text = self._label_name(label)
             if ts is not None:
                 ts_text = time.strftime("%H:%M:%S", time.localtime(ts))
@@ -406,10 +415,11 @@ class PowerTestView(ctk.CTkFrame):
         task = self._task_key()
         new_preds = app.drain_predictions(task) if hasattr(app, "drain_predictions") else []
 
+        valid_labels = (0, 1, 2) if self.task == "creative" else (0, 1, 2, 3, 4)
         for payload in new_preds:
             label = payload.get("label")
             ts = payload.get("timestamp")
-            if label in (0, 1, 2) and (self.activity_label is None or label == self.activity_label):
+            if label in valid_labels and (self.activity_label is None or label == self.activity_label):
                 if ts is None or ts == self.last_seen_timestamp:
                     continue
 
@@ -553,21 +563,33 @@ class PowerTestView(ctk.CTkFrame):
             messagebox.showerror("Save Gagal", f"Gagal menyimpan data:\n{e}")
 
 
-class CognitiveMemoryRecallView(PowerTestView):
+# ── Cognitive task views (5 labels: 0-4) ──
+class CognitiveMATBIIView(PowerTestView):
     def __init__(self, parent):
-        super().__init__(parent, title="COGNITIVE - Memory Recall", task="cognitive", activity_label=0, activity_name="Memory Recall")
+        super().__init__(parent, title="COGNITIVE - MATB-II", task="cognitive", activity_label=0, activity_name="MATB-II")
 
 
-class CognitiveArithmeticCalculationView(PowerTestView):
+class CognitiveNBackView(PowerTestView):
     def __init__(self, parent):
-        super().__init__(parent, title="COGNITIVE - Arithmetic Calculation", task="cognitive", activity_label=1, activity_name="Arithmetic Calculation")
+        super().__init__(parent, title="COGNITIVE - N-Back", task="cognitive", activity_label=1, activity_name="N-Back")
 
 
-class CognitiveVisualPatternView(PowerTestView):
+class CognitivePVTView(PowerTestView):
     def __init__(self, parent):
-        super().__init__(parent, title="COGNITIVE - Visual Pattern", task="cognitive", activity_label=2, activity_name="Visual Pattern")
+        super().__init__(parent, title="COGNITIVE - PVT", task="cognitive", activity_label=2, activity_name="PVT")
 
 
+class CognitiveFlankerView(PowerTestView):
+    def __init__(self, parent):
+        super().__init__(parent, title="COGNITIVE - Flanker", task="cognitive", activity_label=3, activity_name="Flanker")
+
+
+class CognitiveOtherView(PowerTestView):
+    def __init__(self, parent):
+        super().__init__(parent, title="COGNITIVE - Other", task="cognitive", activity_label=4, activity_name="Other")
+
+
+# ── Creative task views (3 labels: 0-2) ──
 class CreativeIdeaGenerationView(PowerTestView):
     def __init__(self, parent):
         super().__init__(parent, title="CREATIVE - Idea Generation", task="creative", activity_label=0, activity_name="Idea Generation")

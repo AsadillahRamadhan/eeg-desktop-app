@@ -318,7 +318,7 @@ class CognitiveClassifier:
             return features
 
     def predict(self, eeg_window: np.ndarray) -> InferenceResult:
-        print(eeg_window)
+        # print(eeg_window)
         """
         Full pipeline: preprocess → extract → scale → predict.
 

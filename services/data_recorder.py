@@ -306,33 +306,54 @@ class DataRecorder:
 
         return os.path.abspath(filepath)
 
-    def _save_csv(self, filepath: str) -> str:
+    def _save_csv(self, filepath: str, feature_columns: Optional[list] = None) -> str:
         """
-        Export hasil klasifikasi dalam format:
-        channel 1, channel 2, ..., channel 16, label
+        Export hasil klasifikasi dalam format CSV sesuai header dataset:
+        ch01_fp1_totalpower, ..., ch16_p4_gamma_rel, subject, task_label
 
-        Setiap baris = 1 window prediksi, kolom channel berisi
-        nilai fitur matang (setelah filter, windowing, ekstraksi fitur).
+        Kolom task_name, window_index, window_start_sec, window_end_sec,
+        fs_after_downsample tidak disertakan (tidak dipakai saat training).
+
+        Setiap baris = 1 window prediksi.
         """
+        # Coba import FEATURE_COLUMNS dari cognitive_pipeline jika tidak diberikan
+        if feature_columns is None:
+            try:
+                from services.cognitive_pipeline import FEATURE_COLUMNS
+                feature_columns = FEATURE_COLUMNS
+            except Exception:
+                # Fallback ke nama generik jika import gagal
+                n_ch = self._n_channels
+                for ev in self._events:
+                    if ev.features is not None:
+                        n_ch = len(ev.features)
+                        break
+                feature_columns = [f"channel_{i+1}" for i in range(n_ch)]
+
+        n_feat = len(feature_columns)
+
         with open(filepath, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
 
-            # Tentukan jumlah channel dari event pertama yang punya features
-            n_ch = self._n_channels
-            for ev in self._events:
-                if ev.features is not None:
-                    n_ch = len(ev.features)
-                    break
-
-            # Header: channel 1, channel 2, ..., channel N, label
-            header = [f"channel {i+1}" for i in range(n_ch)] + ["label"]
+            # Header: fitur sesuai dataset + subject + task_label
+            header = list(feature_columns) + ["subject", "task_label"]
             writer.writerow(header)
 
             for ev in self._events:
                 if ev.features is not None:
-                    row = [f"{v:.6f}" for v in ev.features]
+                    feat_len = len(ev.features)
+                    if feat_len >= n_feat:
+                        row = [f"{v:.8g}" for v in ev.features[:n_feat]]
+                    else:
+                        # Pad dengan 0 jika fitur kurang dari yang diharapkan
+                        row = [f"{v:.8g}" for v in ev.features]
+                        row += ["0.0"] * (n_feat - feat_len)
                 else:
-                    row = ["0.0"] * n_ch
+                    row = ["0.0"] * n_feat
+
+                # subject dikosongkan (tidak diketahui saat inference realtime)
+                row.append("")
+                # task_label = hasil prediksi
                 row.append(ev.label)
                 writer.writerow(row)
 

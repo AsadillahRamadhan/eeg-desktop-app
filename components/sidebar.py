@@ -110,7 +110,7 @@ class Sidebar(ctk.CTkFrame):
         # semua 16 channel.
 
         ctk.CTkFrame(self._content, height=1, fg_color="#2A2A4A").pack(
-            fill="x", padx=16, pady=(16, 4)
+            fill="x", padx=16, pady=(8, 2)
         )
 
         self._sq_expanded = False
@@ -119,7 +119,7 @@ class Sidebar(ctk.CTkFrame):
             text="▶  Signal Quality",
             font=("Segoe UI", 10, "bold"),
             anchor="w",
-            height=32,
+            height=28,
             corner_radius=8,
             fg_color="#1A1D4A",
             hover_color="#22265A",

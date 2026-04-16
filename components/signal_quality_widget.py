@@ -95,7 +95,7 @@ class SignalQualityWidget(ctk.CTkFrame):
     def _build(self):
         # Title row
         title_row = ctk.CTkFrame(self, fg_color="transparent")
-        title_row.pack(fill="x", padx=10, pady=(8, 4))
+        title_row.pack(fill="x", padx=8, pady=(4, 2))
 
         ctk.CTkLabel(
             title_row,
@@ -116,11 +116,11 @@ class SignalQualityWidget(ctk.CTkFrame):
 
         # Header kolom
         hdr = ctk.CTkFrame(self, fg_color="transparent")
-        hdr.pack(fill="x", padx=8, pady=(0, 2))
+        hdr.pack(fill="x", padx=6, pady=(0, 1))
         hdr.columnconfigure(0, minsize=14)   # dot
-        hdr.columnconfigure(1, minsize=30)   # CH#
-        hdr.columnconfigure(2, minsize=72)   # Status
-        hdr.columnconfigure(3, minsize=36)   # %
+        hdr.columnconfigure(1, minsize=28)   # CH#
+        hdr.columnconfigure(2, minsize=68)   # Status
+        hdr.columnconfigure(3, minsize=32)   # %
         hdr.columnconfigure(4, weight=1)     # bar
 
         for col, (txt, anchor) in enumerate([
@@ -128,7 +128,7 @@ class SignalQualityWidget(ctk.CTkFrame):
             ("CH",      "w"),
             ("Status",  "w"),
             ("%",       "e"),
-            ("Amplitude", "w"),
+            ("Amp",     "w"),
         ]):
             ctk.CTkLabel(
                 hdr,
@@ -139,11 +139,11 @@ class SignalQualityWidget(ctk.CTkFrame):
             ).grid(row=0, column=col, sticky="we", padx=(0, 2))
 
         # Separator
-        ctk.CTkFrame(self, height=1, fg_color="#1E2045").pack(fill="x", padx=8, pady=(0, 2))
+        ctk.CTkFrame(self, height=1, fg_color="#1E2045").pack(fill="x", padx=6, pady=(0, 1))
 
         # Channel rows container
         self._rows_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self._rows_frame.pack(fill="x", padx=6, pady=(0, 4))
+        self._rows_frame.pack(fill="x", padx=4, pady=(0, 2))
 
         for ch in range(self.MAX_CHANNELS):
             row = self._build_channel_row(self._rows_frame, ch)
@@ -151,93 +151,75 @@ class SignalQualityWidget(ctk.CTkFrame):
 
         # Legend
         legend = ctk.CTkFrame(self, fg_color="transparent")
-        legend.pack(fill="x", padx=10, pady=(2, 8))
+        legend.pack(fill="x", padx=6, pady=(2, 4))
         self._build_legend(legend)
 
         # Default state: semua tampil dengan status unknown
         self._init_unknown_state()
 
     def _build_channel_row(self, parent: ctk.CTkFrame, ch_index: int) -> dict:
-        """Build satu baris channel menggunakan grid layout."""
-        row_frame = ctk.CTkFrame(parent, fg_color="transparent", height=20)
-        row_frame.pack(fill="x", pady=1)
+        """Build satu baris channel — pakai tk.Label agar tidak ada CTk internal padding."""
+        BG = "#131630"
+
+        row_frame = tk.Frame(parent, bg=BG, height=14)
+        row_frame.pack(fill="x", pady=0)
         row_frame.pack_propagate(False)
 
-        # Konfigurasi kolom grid dalam row_frame
-        row_frame.columnconfigure(0, minsize=14)   # dot
-        row_frame.columnconfigure(1, minsize=30)   # CH#
-        row_frame.columnconfigure(2, minsize=72)   # status text
-        row_frame.columnconfigure(3, minsize=36)   # persen
-        row_frame.columnconfigure(4, weight=1)     # bar
-
-        # Col 0 – Dot status
-        dot_holder = ctk.CTkFrame(row_frame, fg_color="transparent", width=14)
-        dot_holder.grid(row=0, column=0, sticky="ns")
-        dot_holder.grid_propagate(False)
-
-        dot = ctk.CTkFrame(
-            dot_holder,
-            width=8, height=8,
-            corner_radius=4,
-            fg_color=COLOR_UNKNOWN,
+        # Dot status (canvas kecil dengan oval)
+        dot_canvas = tk.Canvas(
+            row_frame, width=8, height=8,
+            bg=BG, highlightthickness=0, bd=0,
         )
-        dot.place(relx=0.5, rely=0.5, anchor="center")
-        dot.pack_propagate(False)
+        dot_canvas.place(x=2, rely=0.5, anchor="w")
+        dot_id = dot_canvas.create_oval(1, 1, 7, 7, fill=COLOR_UNKNOWN, outline="")
+        dot_canvas._oval_id = dot_id
 
-        # Col 1 – Channel name
-        name_lbl = ctk.CTkLabel(
+        # Channel name  "CH1"
+        name_lbl = tk.Label(
             row_frame,
             text=f"CH{ch_index + 1}",
-            font=("Segoe UI", 9, "bold"),
-            text_color="#AAAACC",
-            width=30,
-            anchor="w",
+            font=("Segoe UI", 7, "bold"),
+            fg="#AAAACC", bg=BG,
+            anchor="w", width=4,
         )
-        name_lbl.grid(row=0, column=1, sticky="w")
+        name_lbl.place(x=14, rely=0.5, anchor="w")
 
-        # Col 2 – Status text
-        status_lbl = ctk.CTkLabel(
+        # Status text
+        status_lbl = tk.Label(
             row_frame,
             text="---",
-            font=("Segoe UI", 9),
-            text_color="#555577",
-            width=72,
-            anchor="w",
+            font=("Segoe UI", 7),
+            fg="#555577", bg=BG,
+            anchor="w", width=9,
         )
-        status_lbl.grid(row=0, column=2, sticky="w")
+        status_lbl.place(x=44, rely=0.5, anchor="w")
 
-        # Col 3 – Persentase
-        pct_lbl = ctk.CTkLabel(
+        # Persentase
+        pct_lbl = tk.Label(
             row_frame,
-            text="",
-            font=("Segoe UI", 9, "bold"),
-            text_color="#555577",
-            width=36,
-            anchor="e",
+            text="--%",
+            font=("Segoe UI", 7, "bold"),
+            fg="#555577", bg=BG,
+            anchor="e", width=4,
         )
-        pct_lbl.grid(row=0, column=3, sticky="e", padx=(0, 4))
+        pct_lbl.place(x=112, rely=0.5, anchor="w")
 
-        # Col 4 – Amplitude bar (tk.Canvas)
-        bar_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
-        bar_frame.grid(row=0, column=4, sticky="ew", padx=(2, 4))
-
+        # Amplitude bar canvas — mengisi sisa lebar baris
         bar_canvas = tk.Canvas(
-            bar_frame,
-            height=6,
-            width=60,
-            bg="#1E2045",
-            highlightthickness=0,
-            bd=0,
+            row_frame,
+            height=4, bg="#1E2045",
+            highlightthickness=0, bd=0,
         )
-        bar_canvas.pack(fill="x", expand=True, pady=7)
+        bar_canvas.place(x=144, rely=0.5, anchor="w", relwidth=1.0, width=-148)
 
         return {
             "frame":      row_frame,
-            "dot":        dot,
+            "dot_canvas": dot_canvas,
             "name_lbl":   name_lbl,
             "status_lbl": status_lbl,
             "pct_lbl":    pct_lbl,
             "bar_canvas": bar_canvas,
+            "dot_canvas": dot_canvas,
         }
 
     def _build_legend(self, parent: ctk.CTkFrame):
@@ -262,10 +244,10 @@ class SignalQualityWidget(ctk.CTkFrame):
     def _init_unknown_state(self):
         """Tampilkan semua 16 channel dengan status unknown dari awal."""
         for row in self._channel_rows:
-            row["frame"].pack(fill="x", pady=1)
-            row["dot"].configure(fg_color=COLOR_UNKNOWN)
-            row["status_lbl"].configure(text="---", text_color="#555577")
-            row["pct_lbl"].configure(text="--%", text_color="#555577")
+            row["frame"].pack(fill="x", pady=0)
+            row["dot_canvas"].itemconfig(row["dot_canvas"]._oval_id, fill=COLOR_UNKNOWN)
+            row["status_lbl"].configure(text="---", fg="#555577")
+            row["pct_lbl"].configure(text="--%", fg="#555577")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -297,9 +279,9 @@ class SignalQualityWidget(ctk.CTkFrame):
 
             if ch >= n_ch:
                 # Channel di luar jumlah aktif → tampilkan sebagai unknown
-                row["dot"].configure(fg_color=COLOR_UNKNOWN)
-                row["status_lbl"].configure(text="---", text_color="#555577")
-                row["pct_lbl"].configure(text="--%", text_color="#555577")
+                row["dot_canvas"].itemconfig(row["dot_canvas"]._oval_id, fill=COLOR_UNKNOWN)
+                row["status_lbl"].configure(text="---", fg="#555577")
+                row["pct_lbl"].configure(text="--%", fg="#555577")
                 row["bar_canvas"].delete("bar")
                 continue
 
@@ -309,9 +291,9 @@ class SignalQualityWidget(ctk.CTkFrame):
             label   = STATUS_LABELS[status]
             pct     = _peak_percent(peak_uv)
 
-            row["dot"].configure(fg_color=color)
-            row["status_lbl"].configure(text=label, text_color=color)
-            row["pct_lbl"].configure(text=f"{pct:.0f}%", text_color=color)
+            row["dot_canvas"].itemconfig(row["dot_canvas"]._oval_id, fill=color)
+            row["status_lbl"].configure(text=label, fg=color)
+            row["pct_lbl"].configure(text=f"{pct:.0f}%", fg=color)
 
             # Draw amplitude bar
             self._draw_bar(row["bar_canvas"], peak_uv, color)
@@ -340,9 +322,9 @@ class SignalQualityWidget(ctk.CTkFrame):
         """Reset semua channel ke status unknown (tidak terkoneksi)."""
         self._n_channels = 0
         for row in self._channel_rows:
-            row["dot"].configure(fg_color=COLOR_UNKNOWN)
-            row["status_lbl"].configure(text="---", text_color="#555577")
-            row["pct_lbl"].configure(text="--%", text_color="#555577")
+            row["dot_canvas"].itemconfig(row["dot_canvas"]._oval_id, fill=COLOR_UNKNOWN)
+            row["status_lbl"].configure(text="---", fg="#555577")
+            row["pct_lbl"].configure(text="--%", fg="#555577")
             row["bar_canvas"].delete("bar")
         self._overall_label.configure(text="No Signal", text_color="#555577")
 
@@ -354,9 +336,9 @@ class SignalQualityWidget(ctk.CTkFrame):
         w = canvas.winfo_width()
         h = canvas.winfo_height()
         if w <= 1:
-            w = 60
+            w = 80
         if h <= 1:
-            h = 6
+            h = 4
 
         fill_ratio = min(peak_uv / ADC_MAX_UV, 1.0)
         fill_w = max(int(fill_ratio * w), 0)

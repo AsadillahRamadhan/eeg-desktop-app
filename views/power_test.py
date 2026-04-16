@@ -301,13 +301,7 @@ class PowerTestView(ctk.CTkFrame):
                 outline=activity_color,
             )
             
-            glow_color = "#FFFFFF"
-            self.chart_canvas.create_rectangle(
-                margin_left + 10, bar_y,
-                width - margin_right - 10, bar_y + max(8, bar_height * 0.12),
-                fill=glow_color,
-                outline="",
-            )
+
 
         self.chart_canvas.create_text(
             width / 2,
@@ -435,10 +429,7 @@ class PowerTestView(ctk.CTkFrame):
                     score=score,
                 )
 
-                increment = 0.5
-                if isinstance(score, (int, float)):
-                    increment = max(0.2, min(1.0, float(score)))
-                self.current_value = min(10.0, self.current_value + increment)
+                self.current_value = min(10.0, float(self.match_count))
                 self.update_display(self.current_value)
                 self.refresh_prediction_status()
 

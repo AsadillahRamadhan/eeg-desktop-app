@@ -348,11 +348,21 @@ class App(ctk.CTk):
 
                 self.last_window_ts = now_ts
 
+                # ── Update signal quality indicator di sidebar ─────────────
+                self.after(0, self._update_signal_quality_ui, eeg_full)
+
             except Exception as e:
                 print(f"[inference_loop] error: {e}")
 
 
             time.sleep(sleep_secs)
+
+    def _update_signal_quality_ui(self, eeg) -> None:
+        """Update signal quality widget di sidebar (dipanggil di main thread via after())."""
+        try:
+            self.sidebar.update_signal_quality(eeg)
+        except Exception:
+            pass
 
     def connect_openbci(self):
         if self.is_eeg_connected:
@@ -411,6 +421,11 @@ class App(ctk.CTk):
         self.board_reader = None
         self.is_eeg_connected = False
         self.status.configure(text="● Not Connected", text_color="red")
+        # Reset signal quality indicator
+        try:
+            self.sidebar.update_signal_quality(None)
+        except Exception:
+            pass
 
     def on_close(self):
         self.disconnect_openbci()

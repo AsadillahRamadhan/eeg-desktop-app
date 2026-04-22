@@ -6,7 +6,7 @@ Menyimpan hasil prediksi EEG dan raw EEG data, lalu export ke CSV / TXT.
 Format export:
   - .txt  → Raw EEG data dalam format mirip OpenBCI GUI
              (% header metadata + comma-separated columns)
-  - .csv  → Prediction events (timestamp, label, score)
+  - .csv  → Prediction events (timestamp, datetime, score, label)
 
 Penggunaan:
     from services.data_recorder import DataRecorder
@@ -53,15 +53,11 @@ class DataRecorder:
     def __init__(self) -> None:
         self._events: List[PredictionEvent] = []
 
-        # Raw EEG buffer — disimpan sebagai list of dict per batch
-        # Setiap batch: {'eeg': [n_ch, n_samples], 'accel': [3, n_samples],
-        #                'timestamp': [n_samples], 'sample_index': [n_samples]}
         self._raw_batches: list[dict] = []
         self._raw_sample_count: int = 0
         self._last_raw_timestamp: Optional[float] = None
         self._last_raw_sample_index: Optional[int] = None
 
-        # Metadata board (diisi saat pertama kali add_raw_samples)
         self._n_channels: int = 16
         self._sampling_rate: int = 125
         self._board_name: str = "OpenBCI_Cyton_Daisy"
@@ -96,16 +92,6 @@ class DataRecorder:
         timestamps: Optional[np.ndarray] = None,
         sample_indices: Optional[np.ndarray] = None,
     ) -> None:
-        """
-        Tambahkan batch raw EEG samples ke buffer.
-
-        Parameters
-        ----------
-        eeg : np.ndarray  [n_channels, n_samples]  dalam µV
-        accel : np.ndarray  [3, n_samples]  dalam g  (opsional)
-        timestamps : np.ndarray  [n_samples]  Unix timestamp  (opsional)
-        sample_indices : np.ndarray  [n_samples]  sample index  (opsional)
-        """
         n_ch, n_samples = eeg.shape
         self._n_channels = n_ch
 
@@ -129,7 +115,6 @@ class DataRecorder:
                     sample_indices - int(sample_indices[0])
                 ) * dt_sec
             else:
-                # Generate timestamps berdasarkan waktu sekarang
                 now = time.time()
                 timestamps = np.array([
                     now - (n_samples - 1 - i) * dt_sec for i in range(n_samples)
@@ -137,10 +122,8 @@ class DataRecorder:
         else:
             timestamps = np.asarray(timestamps, dtype=np.float64)
 
-            # Cek apakah timestamps punya variasi sub-detik yang cukup
-            # (atau spacing tidak realistis terhadap sample rate)
-            ts_range = float(np.ptp(timestamps))  # max - min
-            expected_range = (n_samples - 1) / self._sampling_rate  # harusnya ~durasi window
+            ts_range = float(np.ptp(timestamps))
+            expected_range = (n_samples - 1) / self._sampling_rate
             spacing_too_small = False
             if n_samples > 1:
                 diffs = np.diff(timestamps)
@@ -148,7 +131,6 @@ class DataRecorder:
                 spacing_too_small = median_dt < (dt_sec * 0.25)
 
             if (n_samples > 1 and ts_range < expected_range * 0.1) or spacing_too_small:
-                # Timestamp board kurang valid → rekonstruksi dari sample index.
                 if self._last_raw_timestamp is not None and self._last_raw_sample_index is not None:
                     first_ts = self._last_raw_timestamp + (
                         int(sample_indices[0]) - self._last_raw_sample_index
@@ -201,13 +183,6 @@ class DataRecorder:
     # ── export ───────────────────────────────────────────────────────
 
     def save(self, filepath: str) -> str:
-        """
-        Export data berdasarkan ekstensi file.
-        - .txt  → Raw EEG data format OpenBCI
-        - .csv  → Prediction events
-
-        Returns path absolut file yang tersimpan.
-        """
         ext = os.path.splitext(filepath)[1].lower()
         if ext == ".txt":
             return self._save_openbci_txt(filepath)
@@ -215,26 +190,8 @@ class DataRecorder:
             return self._save_csv(filepath)
 
     def _save_openbci_txt(self, filepath: str) -> str:
-        """
-        Export raw EEG data dalam format TXT mirip OpenBCI GUI.
-
-        Format:
-          %OpenBCI Raw EEG Data
-          %Number of channels = 16
-          %Sample Rate = 125 Hz
-          %Board = OpenBCI_Cyton_Daisy
-          %Start Time = 2026-04-07 12:30:00
-          %Total Samples = 1250
-          %
-          Sample Index, EXG Channel 0, EXG Channel 1, ..., Accel Channel 0, Accel Channel 1, Accel Channel 2, Timestamp, Timestamp (Formatted)
-          0, 12.3456, -45.6789, ..., 0.014, 0.826, 0.532, 1712345678.123456, 12:30:00.123
-        """
         with open(filepath, "w", encoding="utf-8") as f:
-            # ===== Header metadata (baris % ) =====
-            start_time_str = time.strftime(
-                "%Y-%m-%d %H:%M:%S",
-                time.localtime(time.time())
-            )
+            start_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
             f.write("%OpenBCI Raw EEG Data\n")
             f.write(f"%Number of channels = {self._n_channels}\n")
             f.write(f"%Sample Rate = {self._sampling_rate} Hz\n")
@@ -244,61 +201,40 @@ class DataRecorder:
             f.write(f"%Total Predictions = {len(self._events)}\n")
             f.write("%\n")
 
-            # ===== Column header =====
-            ch_headers = ", ".join(
-                f"EXG Channel {i}" for i in range(self._n_channels)
-            )
-            header_line = (
+            ch_headers = ", ".join(f"EXG Channel {i}" for i in range(self._n_channels))
+            f.write(
                 f"Sample Index, {ch_headers}, "
                 f"Accel Channel 0, Accel Channel 1, Accel Channel 2, "
-                f"Timestamp, Timestamp (Formatted)"
+                f"Timestamp, Timestamp (Formatted)\n"
             )
-            f.write(header_line + "\n")
 
-            # ===== Data rows =====
             for batch in self._raw_batches:
-                eeg = batch['eeg']           # [n_ch, n_samples]
-                accel = batch['accel']       # [3, n_samples]
-                ts = batch['timestamp']      # [n_samples]
-                idx = batch['sample_index']  # [n_samples]
-
+                eeg = batch['eeg']
+                accel = batch['accel']
+                ts = batch['timestamp']
+                idx = batch['sample_index']
                 n_samples = eeg.shape[1]
                 for s in range(n_samples):
-                    # Sample index
                     parts = [f"{int(idx[s])}"]
-
-                    # EEG channels (µV, 6 decimal places)
                     for c in range(eeg.shape[0]):
                         parts.append(f" {eeg[c, s]:.6f}")
-
-                    # Accel channels (g, 4 decimal places)
                     for a in range(accel.shape[0]):
                         parts.append(f" {accel[a, s]:.4f}")
-
-                    # Timestamp (raw Unix, microsecond precision)
                     ts_val = float(ts[s])
                     parts.append(f" {ts_val:.6f}")
-
-                    # Timestamp (formatted, include microseconds)
                     ts_fmt = dt.datetime.fromtimestamp(ts_val).strftime("%H:%M:%S.%f")
                     parts.append(f" {ts_fmt}")
-
                     f.write(",".join(parts) + "\n")
 
-            # ===== Prediction summary (di akhir file, sebagai komentar) =====
             if self._events:
-                f.write("%\n")
-                f.write("% === PREDICTION SUMMARY ===\n")
+                f.write("%\n% === PREDICTION SUMMARY ===\n")
                 f.write(f"% Total Predictions: {len(self._events)}\n")
-
                 label_counts: dict[str, int] = {}
                 for ev in self._events:
                     label_counts[ev.label] = label_counts.get(ev.label, 0) + 1
                 for label, cnt in sorted(label_counts.items()):
                     f.write(f"% {label}: {cnt}\n")
-
-                f.write("%\n")
-                f.write("% No, Pred_Timestamp, DateTime, Label, Score\n")
+                f.write("%\n% No, Pred_Timestamp, DateTime, Label, Score\n")
                 for i, ev in enumerate(self._events, start=1):
                     dt_str = dt.datetime.fromtimestamp(ev.timestamp).strftime("%Y-%m-%d %H:%M:%S.%f")
                     score_str = f"{ev.score:.4f}" if ev.score is not None else "-"
@@ -308,92 +244,67 @@ class DataRecorder:
 
     def _save_csv(self, filepath: str, feature_columns: Optional[list] = None) -> str:
         """
-        Export hasil klasifikasi dalam format CSV sesuai header dataset:
-        ch01_fp1_totalpower, ..., ch16_p4_gamma_rel, subject, task_label
-
-        Kolom task_name, window_index, window_start_sec, window_end_sec,
-        fs_after_downsample tidak disertakan (tidak dipakai saat training).
-
-        Setiap baris = 1 window prediksi.
+        Export hasil klasifikasi dalam format CSV.
+        Kolom: timestamp, datetime, score, [176 feature cols], subject, task_label
         """
-        # Coba import FEATURE_COLUMNS dari cognitive_pipeline jika tidak diberikan
+        if feature_columns is None:
+            try:
+                from services.creative_pipeline import FEATURE_NAMES as CRE_FEAT
+                feature_columns = CRE_FEAT
+            except Exception:
+                pass
+
         if feature_columns is None:
             try:
                 from services.cognitive_pipeline import FEATURE_COLUMNS
                 feature_columns = FEATURE_COLUMNS
             except Exception:
-                # Fallback ke nama generik jika import gagal
-                n_ch = self._n_channels
-                for ev in self._events:
-                    if ev.features is not None:
-                        n_ch = len(ev.features)
-                        break
-                feature_columns = [f"channel_{i+1}" for i in range(n_ch)]
+                pass
+
+        if feature_columns is None:
+            n_ch = self._n_channels
+            for ev in self._events:
+                if ev.features is not None:
+                    n_ch = len(ev.features)
+                    break
+            feature_columns = [f"channel_{i+1}" for i in range(n_ch)]
 
         n_feat = len(feature_columns)
 
         with open(filepath, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-
-            # Header: fitur sesuai dataset + subject + task_label
-            header = list(feature_columns) + ["subject", "task_label"]
+            header = ["timestamp", "datetime", "score"] + list(feature_columns) + ["subject", "task_label"]
             writer.writerow(header)
 
             for ev in self._events:
+                ts_val = ev.timestamp
+                dt_str = dt.datetime.fromtimestamp(ts_val).strftime("%Y-%m-%d %H:%M:%S.%f")
+                score_str = f"{ev.score:.6f}" if ev.score is not None else ""
+
                 if ev.features is not None:
                     feat_len = len(ev.features)
                     if feat_len >= n_feat:
-                        row = [f"{v:.8g}" for v in ev.features[:n_feat]]
+                        feat_row = [f"{v:.8g}" for v in ev.features[:n_feat]]
                     else:
-                        # Pad dengan 0 jika fitur kurang dari yang diharapkan
-                        row = [f"{v:.8g}" for v in ev.features]
-                        row += ["0.0"] * (n_feat - feat_len)
+                        feat_row = [f"{v:.8g}" for v in ev.features]
+                        feat_row += ["0.0"] * (n_feat - feat_len)
                 else:
-                    row = ["0.0"] * n_feat
+                    feat_row = ["0.0"] * n_feat
 
-                # subject dikosongkan (tidak diketahui saat inference realtime)
-                row.append("")
-                # task_label = hasil prediksi
-                row.append(ev.label)
+                row = [f"{ts_val:.6f}", dt_str, score_str] + feat_row + ["", ev.label]
                 writer.writerow(row)
 
         return os.path.abspath(filepath)
-    
+
     def get_classification_summary(self) -> dict[str, int]:
-        """
-        Get count of classifications per label.
-        
-        Returns
-        -------
-        dict[str, int]
-            Mapping dari label → count
-        """
         label_counts: dict[str, int] = {}
         for ev in self._events:
             label_counts[ev.label] = label_counts.get(ev.label, 0) + 1
         return label_counts
-    
+
     def save_separate_files(self, base_filepath: str) -> tuple[str, str]:
-        """
-        Save raw EEG dan classification results ke file terpisah.
-        
-        Parameters
-        ----------
-        base_filepath : str
-            Path tanpa extension, misal "creative_data"
-        
-        Returns
-        -------
-        tuple[str, str]
-            (path_raw_eeg, path_classifications)
-        """
-        # Save raw EEG → .txt
         raw_path = base_filepath + "_raw.txt"
         self._save_openbci_txt(raw_path)
-        
-        # Save classifications detail → _classifications.csv
-        # Format: channel 1, channel 2, ..., channel 16, label
         class_path = base_filepath + "_classifications.csv"
         self._save_csv(class_path)
-        
         return os.path.abspath(raw_path), os.path.abspath(class_path)

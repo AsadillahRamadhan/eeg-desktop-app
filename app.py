@@ -57,6 +57,8 @@ class App(ctk.CTk):
         self.is_eeg_connected = False
         self.is_inference_running = False
         self.inference_thread = None
+        self._raw_recording_active = False      # flag khusus raw recording thread
+        self._raw_recording_thread = None
         self.active_task: str | None = None
         self.current_view_name: str | None = None
 
@@ -155,8 +157,14 @@ class App(ctk.CTk):
         self.inference_thread = threading.Thread(target=self._inference_loop, daemon=True)
         self.inference_thread.start()
 
+        # Thread terpisah khusus merekam raw data (125 sample/detik)
+        self._raw_recording_active = True
+        self._raw_recording_thread = threading.Thread(target=self._raw_recording_loop, daemon=True)
+        self._raw_recording_thread.start()
+
     def _stop_inference(self):
         self.is_inference_running = False
+        self._raw_recording_active = False
 
     def start_task_inference(self, task: str):
         if task not in ("cognitive", "creative", "combined"):
@@ -184,6 +192,50 @@ class App(ctk.CTk):
             return view.recorder
         return None
 
+    def _raw_recording_loop(self):
+        """
+        Thread KHUSUS untuk merekam raw EEG mentah.
+        Berjalan setiap 1 detik, independent dari inference loop,
+        sehingga persis 125 sample/detik tersimpan tanpa kehilangan data.
+        """
+        if self.board_reader is None:
+            return
+
+        fs = self.board_reader.sampling_rate   # 125 Hz
+        raw_buf = int(fs * 2)                  # minta 2 detik = 250 sample (aman untuk dedup)
+        # Gunakan timestamp (bukan sample_index) untuk dedup karena OpenBCI
+        # packet number wrap around di 255 (~2 detik) sehingga index tidak bisa dipakai.
+        last_saved_ts = -1.0
+
+        while self._raw_recording_active and self.board_reader is not None and self.board_reader.connected:
+            try:
+                recorder = self._get_active_recorder()
+                if recorder is not None:
+                    recorder.set_board_info(
+                        n_channels=self.board_reader.n_eeg_channels,
+                        sampling_rate=fs,
+                    )
+                    raw_data = self.board_reader.get_latest_full(raw_buf)
+                    raw_eeg  = raw_data["eeg"]
+                    raw_accel = raw_data["accel"]
+                    raw_ts   = raw_data["timestamp"]
+                    raw_idx  = raw_data["sample_index"]
+
+                    # Dedup pakai timestamp — tidak wrap, selalu monoton naik
+                    new_mask = raw_ts > last_saved_ts
+                    if np.any(new_mask):
+                        recorder.add_raw_samples(
+                            eeg=raw_eeg[:, new_mask],
+                            accel=raw_accel[:, new_mask],
+                            timestamps=raw_ts[new_mask],
+                            sample_indices=raw_idx[new_mask],
+                        )
+                        last_saved_ts = float(raw_ts[new_mask][-1])
+            except Exception as e:
+                print(f"[raw_recording_loop] error: {e}")
+
+            time.sleep(1.0)  # jalan tepat 1 detik sekali
+
     def _inference_loop(self):
         """
         Pipeline inferensi EEG (background thread).
@@ -191,7 +243,7 @@ class App(ctk.CTk):
           cognitive_pipeline : upsample → notch → bandpass → window → PSD → predict
           creative_pipeline  : notch → bandpass → extract → predict
 
-        Juga menyimpan raw EEG ke DataRecorder untuk export format OpenBCI.
+        Raw EEG direkam oleh _raw_recording_loop (thread terpisah).
         """
         if self.board_reader is None:
             return
@@ -202,18 +254,10 @@ class App(ctk.CTk):
         max_raw = max(n_cog, n_cre)
         sleep_secs = min(COG_SECONDS, CRE_SECONDS)
 
-        # Track sample_index terakhir yang sudah disimpan ke recorder
-        # (sample_index lebih reliable daripada timestamp untuk dedup)
-        last_saved_sample_idx = -1
-
         while self.is_inference_running and self.board_reader is not None and self.board_reader.connected:
             try:
-                # Ambil data lengkap (EEG + accel + timestamp + sample_index)
                 full_data = self.board_reader.get_latest_full(max_raw)
-                eeg_full = full_data["eeg"]       # [n_ch, max_raw] µV
-                accel    = full_data["accel"]      # [3, max_raw] g
-                ts_arr   = full_data["timestamp"]  # [max_raw] Unix
-                idx_arr  = full_data["sample_index"]  # [max_raw]
+                eeg_full = full_data["eeg"]           # [n_ch, max_raw] µV
 
                 if eeg_full.shape[1] < max_raw:
                     time.sleep(0.5)
@@ -223,9 +267,6 @@ class App(ctk.CTk):
                 cre_window = eeg_full[:, -n_cre:]  # [n_ch, n_cre]
 
                 now_ts = time.time()
-
-                # Simpan raw EEG ke recorder milik view aktif
-                recorder = self._get_active_recorder()
 
                 # Jalankan inferensi hanya untuk menu aktif.
                 if self.active_task == "cognitive":
@@ -243,24 +284,6 @@ class App(ctk.CTk):
                         "timestamp": now_ts,
                         "features":  cog.features,
                     })
-                    # Simpan raw window EEG yang dipakai cognitive
-                    if recorder is not None:
-                        recorder.set_board_info(
-                            n_channels=self.board_reader.n_eeg_channels,
-                            sampling_rate=fs,
-                        )
-                        # Filter: hanya simpan sample BARU berdasarkan sample_index
-                        raw_idx = idx_arr[-n_cog:]
-                        raw_ts  = ts_arr[-n_cog:]
-                        new_mask = raw_idx > last_saved_sample_idx
-                        if np.any(new_mask):
-                            recorder.add_raw_samples(
-                                eeg=cog_window[:, new_mask],
-                                accel=accel[:, -n_cog:][:, new_mask],
-                                timestamps=raw_ts[new_mask],
-                                sample_indices=raw_idx[new_mask],
-                            )
-                            last_saved_sample_idx = int(raw_idx[new_mask][-1])
 
                 elif self.active_task == "creative":
                     cre = self.creative_classifier.predict(cre_window)
@@ -277,43 +300,8 @@ class App(ctk.CTk):
                         "timestamp": now_ts,
                         "features":  cre.features,
                     })
-                    # Simpan raw window EEG yang dipakai creative
-                    if recorder is not None:
-                        recorder.set_board_info(
-                            n_channels=self.board_reader.n_eeg_channels,
-                            sampling_rate=fs,
-                        )
-                        # Filter: hanya simpan sample BARU berdasarkan sample_index
-                        raw_idx = idx_arr[-n_cre:]
-                        raw_ts  = ts_arr[-n_cre:]
-                        new_mask = raw_idx > last_saved_sample_idx
-                        if np.any(new_mask):
-                            recorder.add_raw_samples(
-                                eeg=cre_window[:, new_mask],
-                                accel=accel[:, -n_cre:][:, new_mask],
-                                timestamps=raw_ts[new_mask],
-                                sample_indices=raw_idx[new_mask],
-                            )
-                            last_saved_sample_idx = int(raw_idx[new_mask][-1])
 
                 elif self.active_task == "combined":
-                    if recorder is not None:
-                        recorder.set_board_info(
-                            n_channels=self.board_reader.n_eeg_channels,
-                            sampling_rate=fs,
-                        )
-                        raw_idx = idx_arr[-max_raw:]
-                        raw_ts = ts_arr[-max_raw:]
-                        new_mask = raw_idx > last_saved_sample_idx
-                        if np.any(new_mask):
-                            recorder.add_raw_samples(
-                                eeg=eeg_full[:, -max_raw:][:, new_mask],
-                                accel=accel[:, -max_raw:][:, new_mask],
-                                timestamps=raw_ts[new_mask],
-                                sample_indices=raw_idx[new_mask],
-                            )
-                            last_saved_sample_idx = int(raw_idx[new_mask][-1])
-
                     cog = self.cognitive_classifier.predict(cog_window)
                     self._log_prediction("cognitive", cog.label, cog.score, now_ts)
                     self.predictions["cognitive"] = {
